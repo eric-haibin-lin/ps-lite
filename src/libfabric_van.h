@@ -473,45 +473,47 @@ class LibfabricVan : public Van {
   }
 
   void Stop() override {
-//    PS_VLOG(1) << my_node_.ShortDebugString() << " is stopping";
-//    Van::Stop();
-//
-//    should_stop_ = true;
-//    CHECK(should_stop_);
-//
-//    PS_VLOG(1) << "Stopping cq_polling_thread_.";
-//    cq_polling_thread_->join();
-//    cq_polling_thread_.reset();
-//
-//    PS_VLOG(1) << "Stopping cm_event_polling_thread_.";
-//    cm_event_polling_thread_->join();
-//    cm_event_polling_thread_.reset();
-//
-//    PS_VLOG(1) << "Clearing mempool.";
-//    mempool_.reset();
-//
-//    auto map_iter = memory_mr_map.begin();
-//    while (map_iter != memory_mr_map.end()) {
-//      ibv_dereg_mr(map_iter->second);
-//      map_iter++;
-//    }
-//
-//    PS_VLOG(1) << "Clearing endpoints.";
-//    incoming_.clear();
-//    endpoints_.clear();
-//
-//    PS_VLOG(1) << "Destroying cq and pd.";
-//    CHECK(!ibv_destroy_cq(cq_)) << "Failed to destroy CQ";
-//    CHECK(!ibv_destroy_comp_channel(comp_event_channel_))
-//        << "Failed to destroy channel";
-//
-//    // TODO: ibv_dealloc_pd sometimes complains resource busy, need to fix this
-//    // CHECK(!ibv_dealloc_pd(pd_)) << "Failed to deallocate PD: " <<
-//    // strerror(errno);
-//
-//    PS_VLOG(1) << "Destroying listener.";
-//    rdma_destroy_id(listener_);
-//    rdma_destroy_event_channel(event_channel_);
+    PS_VLOG(1) << my_node_.ShortDebugString() << " is stopping";
+    Van::Stop();
+
+    should_stop_ = true;
+    CHECK(should_stop_);
+
+    PS_VLOG(1) << "Stopping cq_polling_thread_.";
+    cq_polling_thread_->join();
+    cq_polling_thread_.reset();
+
+    PS_VLOG(1) << "Stopping cm_event_polling_thread_.";
+    cm_event_polling_thread_->join();
+    cm_event_polling_thread_.reset();
+
+    PS_VLOG(1) << "Clearing mempool.";
+    /*
+    mempool_.reset();
+
+    auto map_iter = memory_mr_map.begin();
+    while (map_iter != memory_mr_map.end()) {
+      ibv_dereg_mr(map_iter->second);
+      map_iter++;
+    }
+
+    PS_VLOG(1) << "Clearing endpoints.";
+    incoming_.clear();
+    endpoints_.clear();
+
+    PS_VLOG(1) << "Destroying cq and pd.";
+    CHECK(!ibv_destroy_cq(cq_)) << "Failed to destroy CQ";
+    CHECK(!ibv_destroy_comp_channel(comp_event_channel_))
+        << "Failed to destroy channel";
+
+    // TODO: ibv_dealloc_pd sometimes complains resource busy, need to fix this
+    // CHECK(!ibv_dealloc_pd(pd_)) << "Failed to deallocate PD: " <<
+    // strerror(errno);
+    */
+
+    PS_VLOG(1) << "Destroying listener.";
+    rdma_destroy_id(listener_);
+    rdma_destroy_event_channel(event_channel_);
   }
 
   int Bind(const Node &node, int max_retry) override {
@@ -1341,6 +1343,8 @@ class LibfabricVan : public Van {
   struct rdma_cm_id *listener_ = nullptr;
   // event thread
   std::unique_ptr<std::thread> cm_event_polling_thread_;
+  // cq thread
+  std::unique_ptr<std::thread> cq_polling_thread_;
   // whether my role is server or not
   bool is_server;
   // RDMA logging info
@@ -1357,8 +1361,6 @@ class LibfabricVan : public Van {
 //  struct ibv_comp_channel *comp_event_channel_ = nullptr;
 //  // Completion queue, to poll on work completions
 //  struct ibv_cq *cq_ = nullptr;
-//  // cq thread
-//  std::unique_ptr<std::thread> cq_polling_thread_;
 //
 //  // Recv buffer queue
 //  ThreadsafeQueue<std::tuple<Endpoint *, BufferContext *>> recv_buffers_;
