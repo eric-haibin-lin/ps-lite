@@ -36,6 +36,7 @@ namespace ps {
 
 static const int kRdmaListenBacklog = 128;
 static const int kMaxHostnameLength = 16;
+static const int kTimeoutms = 1000;
 
 //static const int kStartDepth = 128;
 //static const int kWriteDepth = kStartDepth;
@@ -44,7 +45,6 @@ static const int kMaxHostnameLength = 16;
 //static const int kReplyDepth = kRxDepth;
 //
 //static const int kSGEntry = 4;
-//static const int kTimeoutms = 1000;
 //static const int kMaxConcurrentWorkRequest =
 //    kRxDepth + kStartDepth + kReplyDepth + kWriteDepth;
 //static const int kMaxDataFields = 4;
@@ -1188,7 +1188,7 @@ class LibfabricVan : public Van {
           OnConnectRequest(event);
           break;
         case RDMA_CM_EVENT_ADDR_RESOLVED:
-          // OnAddrResolved(event);
+          OnAddrResolved(event);
           break;
         case RDMA_CM_EVENT_ROUTE_RESOLVED:
           // OnRouteResolved(event);
@@ -1269,13 +1269,13 @@ class LibfabricVan : public Van {
     CHECK_EQ(rdma_accept(id, &cm_params), 0)
         << "Accept RDMA connection failed: " << strerror(errno);
   }
-//
-//  // Resolve a route after address is resolved
-//  void OnAddrResolved(struct rdma_cm_event *event) {
-//    struct rdma_cm_id *id = event->id;
-//    CHECK_EQ(rdma_resolve_route(id, kTimeoutms), 0)
-//        << "Resolve RDMA route failed";
-//  }
+
+  // Resolve a route after address is resolved
+  void OnAddrResolved(struct rdma_cm_event *event) {
+    struct rdma_cm_id *id = event->id;
+    CHECK_EQ(rdma_resolve_route(id, kTimeoutms), 0)
+        << "Resolve RDMA route failed";
+  }
 //
 //  // Make a connection after route is resolved
 //  void OnRouteResolved(struct rdma_cm_event *event) {
