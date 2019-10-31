@@ -1197,10 +1197,10 @@ class LibfabricVan : public Van {
           OnConnected(event);
           break;
         case RDMA_CM_EVENT_DISCONNECTED:
-          // OnDisconnected(event);
+          OnDisconnected(event);
           break;
         case RDMA_CM_EVENT_REJECTED:
-          // OnRejected(event);
+          OnRejected(event);
           break;
         default:
           CHECK(0) << "OnEvent: unknown event " << event->event << " ("
@@ -1210,23 +1210,25 @@ class LibfabricVan : public Van {
     }
   }
 
-//  void OnRejected(struct rdma_cm_event *event) {
-//    struct rdma_cm_id *id = event->id;
-//    Endpoint *endpoint = reinterpret_cast<Endpoint *>(id->context);
-//
-//    auto it = endpoints_.find(endpoint->node_id);
-//    CHECK(it != endpoints_.end()) << "Connection not ready.";
-//    CHECK_EQ(endpoint->status, Endpoint::CONNECTING);
-//    CHECK_EQ(endpoint->cm_id, id);
-//
-//    PS_VLOG(1) << "Connection rejected, retrying...";
-//    {
-//      std::lock_guard<std::mutex> lk(endpoint->connect_mu);
-//      endpoint->status = Endpoint::REJECTED;
-//    }
-//    endpoint->cv.notify_all();
-//  }
-//
+  void OnRejected(struct rdma_cm_event *event) {
+    struct rdma_cm_id *id = event->id;
+    /*
+    Endpoint *endpoint = reinterpret_cast<Endpoint *>(id->context);
+
+    auto it = endpoints_.find(endpoint->node_id);
+    CHECK(it != endpoints_.end()) << "Connection not ready.";
+    CHECK_EQ(endpoint->status, Endpoint::CONNECTING);
+    CHECK_EQ(endpoint->cm_id, id);
+
+    PS_VLOG(1) << "Connection rejected, retrying...";
+    {
+      std::lock_guard<std::mutex> lk(endpoint->connect_mu);
+      endpoint->status = Endpoint::REJECTED;
+    }
+    endpoint->cv.notify_all();
+    */
+  }
+
   void OnConnectRequest(struct rdma_cm_event *event) {
     struct rdma_cm_id *id = event->id;
     CHECK_NOTNULL(id);
@@ -1324,18 +1326,20 @@ class LibfabricVan : public Van {
     endpoint->cv.notify_all();
     */
   }
-//
-//  void OnDisconnected(struct rdma_cm_event *event) {
-//    LOG(INFO) << "OnDisconnected from Node " << my_node_.id;
-//    struct rdma_cm_id *id = event->id;
-//    Endpoint *endpoint = reinterpret_cast<Endpoint *>(id->context);
-//    {
-//      std::lock_guard<std::mutex> lk(endpoint->connect_mu);
-//      endpoint->status = Endpoint::IDLE;
-//    }
-//    endpoint->cv.notify_all();
-//  }
-//
+
+  void OnDisconnected(struct rdma_cm_event *event) {
+    LOG(INFO) << "OnDisconnected from Node " << my_node_.id;
+    struct rdma_cm_id *id = event->id;
+    /*
+    Endpoint *endpoint = reinterpret_cast<Endpoint *>(id->context);
+    {
+      std::lock_guard<std::mutex> lk(endpoint->connect_mu);
+      endpoint->status = Endpoint::IDLE;
+    }
+    endpoint->cv.notify_all();
+    */
+  }
+
 //  AddressPool<BufferContext> addr_pool_;
 //  std::unique_ptr<SimpleMempool> mempool_;
 //
