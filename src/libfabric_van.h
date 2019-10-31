@@ -998,7 +998,7 @@ class LibfabricVan : public Van {
 //    }
 //  }
 //
-//  void PollCQ() {
+  void PollCQ() {
 //    // Pre-allocated work completions array used for polling
 //    struct ibv_wc wc[kMaxConcurrentWorkRequest];
 //    while (!should_stop_.load()) {
@@ -1160,8 +1160,8 @@ class LibfabricVan : public Van {
 //        }
 //      }
 //    }
-//  }
-//
+  }
+
   void PollEvents() {
     int flags = fcntl(event_channel_->fd, F_GETFL);
     int rc = fcntl(event_channel_->fd, F_SETFL, flags | O_NONBLOCK);
@@ -1191,10 +1191,10 @@ class LibfabricVan : public Van {
           OnAddrResolved(event);
           break;
         case RDMA_CM_EVENT_ROUTE_RESOLVED:
-          // OnRouteResolved(event);
+          OnRouteResolved(event);
           break;
         case RDMA_CM_EVENT_ESTABLISHED:
-          // OnConnected(event);
+          OnConnected(event);
           break;
         case RDMA_CM_EVENT_DISCONNECTED:
           // OnDisconnected(event);
@@ -1305,23 +1305,25 @@ class LibfabricVan : public Van {
         << "RDMA connect failed" << strerror(errno);
   }
 
-//  void OnConnected(struct rdma_cm_event *event) {
-//    struct rdma_cm_id *id = event->id;
-//    CHECK(id) << "rdma_cm_id not found.";
-//    Endpoint *endpoint = reinterpret_cast<Endpoint *>(id->context);
-//    CHECK(endpoint) << "Endpoint not found.";
-//
-//    if (cq_polling_thread_ == nullptr) {
-//      cq_polling_thread_.reset(new std::thread(&RDMAVan::PollCQ, this));
-//    }
-//
-//    CHECK_EQ(endpoint->cm_id, id);
-//    {
-//      std::lock_guard<std::mutex> lk(endpoint->connect_mu);
-//      endpoint->status = Endpoint::CONNECTED;
-//    }
-//    endpoint->cv.notify_all();
-//  }
+  void OnConnected(struct rdma_cm_event *event) {
+    struct rdma_cm_id *id = event->id;
+    CHECK(id) << "rdma_cm_id not found.";
+    /*
+    Endpoint *endpoint = reinterpret_cast<Endpoint *>(id->context);
+    CHECK(endpoint) << "Endpoint not found.";
+    */
+    if (cq_polling_thread_ == nullptr) {
+      cq_polling_thread_.reset(new std::thread(&LibfabricVan::PollCQ, this));
+    }
+    /*
+    CHECK_EQ(endpoint->cm_id, id);
+    {
+      std::lock_guard<std::mutex> lk(endpoint->connect_mu);
+      endpoint->status = Endpoint::CONNECTED;
+    }
+    endpoint->cv.notify_all();
+    */
+  }
 //
 //  void OnDisconnected(struct rdma_cm_event *event) {
 //    LOG(INFO) << "OnDisconnected from Node " << my_node_.id;
