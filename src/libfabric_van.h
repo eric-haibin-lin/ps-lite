@@ -9,10 +9,10 @@
 
 #ifdef DMLC_USE_LIBFABRIC
 
-//#include <errno.h>
-//#include <fcntl.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <poll.h>
 //#include <netdb.h>
-//#include <poll.h>
 //#include <stddef.h>
 //#include <stdio.h>
 //#include <stdlib.h>
@@ -1163,53 +1163,53 @@ class LibfabricVan : public Van {
 //  }
 //
   void PollEvents() {
-//    int flags = fcntl(event_channel_->fd, F_GETFL);
-//    int rc = fcntl(event_channel_->fd, F_SETFL, flags | O_NONBLOCK);
-//    CHECK_GE(rc, 0);
-//    int error_flags = POLLERR | POLLHUP | POLLNVAL;
-//
-//    while (!should_stop_.load()) {
-//      struct pollfd pfd = {
-//          .fd = event_channel_->fd, .events = POLLIN, .revents = 0};
-//      int ret = poll(&pfd, 1, 10);
-//
-//      CHECK_GE(ret, 0) << strerror(errno);
-//      CHECK_EQ(pfd.revents & error_flags, 0);
-//
-//      if (!(pfd.revents & POLLIN)) {
-//        continue;
-//      }
-//
-//      struct rdma_cm_event *event;
-//      CHECK_EQ(rdma_get_cm_event(event_channel_, &event), 0);
-//      // TODO(clan): Reorder the list according to the event frequency
-//      switch (event->event) {
-//        case RDMA_CM_EVENT_CONNECT_REQUEST:
-//          OnConnectRequest(event);
-//          break;
-//        case RDMA_CM_EVENT_ADDR_RESOLVED:
-//          OnAddrResolved(event);
-//          break;
-//        case RDMA_CM_EVENT_ROUTE_RESOLVED:
-//          OnRouteResolved(event);
-//          break;
-//        case RDMA_CM_EVENT_ESTABLISHED:
-//          OnConnected(event);
-//          break;
-//        case RDMA_CM_EVENT_DISCONNECTED:
-//          OnDisconnected(event);
-//          break;
-//        case RDMA_CM_EVENT_REJECTED:
-//          OnRejected(event);
-//          break;
-//        default:
-//          CHECK(0) << "OnEvent: unknown event " << event->event << " ("
-//                   << rdma_event_str(event->event) << ")";
-//      }
-//      rdma_ack_cm_event(event);
-//    }
+    int flags = fcntl(event_channel_->fd, F_GETFL);
+    int rc = fcntl(event_channel_->fd, F_SETFL, flags | O_NONBLOCK);
+    CHECK_GE(rc, 0);
+    int error_flags = POLLERR | POLLHUP | POLLNVAL;
+
+    while (!should_stop_.load()) {
+      struct pollfd pfd = {
+          .fd = event_channel_->fd, .events = POLLIN, .revents = 0};
+      int ret = poll(&pfd, 1, 10);
+
+      CHECK_GE(ret, 0) << strerror(errno);
+      CHECK_EQ(pfd.revents & error_flags, 0);
+
+      if (!(pfd.revents & POLLIN)) {
+        continue;
+      }
+
+      struct rdma_cm_event *event;
+      CHECK_EQ(rdma_get_cm_event(event_channel_, &event), 0);
+      // TODO(clan): Reorder the list according to the event frequency
+      switch (event->event) {
+        case RDMA_CM_EVENT_CONNECT_REQUEST:
+          // OnConnectRequest(event);
+          break;
+        case RDMA_CM_EVENT_ADDR_RESOLVED:
+          // OnAddrResolved(event);
+          break;
+        case RDMA_CM_EVENT_ROUTE_RESOLVED:
+          // OnRouteResolved(event);
+          break;
+        case RDMA_CM_EVENT_ESTABLISHED:
+          // OnConnected(event);
+          break;
+        case RDMA_CM_EVENT_DISCONNECTED:
+          // OnDisconnected(event);
+          break;
+        case RDMA_CM_EVENT_REJECTED:
+          // OnRejected(event);
+          break;
+        default:
+          CHECK(0) << "OnEvent: unknown event " << event->event << " ("
+                   << rdma_event_str(event->event) << ")";
+      }
+      rdma_ack_cm_event(event);
+    }
   }
-//
+
 //  void OnRejected(struct rdma_cm_event *event) {
 //    struct rdma_cm_id *id = event->id;
 //    Endpoint *endpoint = reinterpret_cast<Endpoint *>(id->context);
