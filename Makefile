@@ -27,6 +27,12 @@ LIBS += -lrdmacm -libverbs
 CFLAGS += -DDMLC_USE_RDMA
 endif
 
+ifeq ($(USE_FABRIC), 1)
+LIBS += -lrdmacm -lfabric -L/opt/amazon/efa/lib64
+CFLAGS += -DDMLC_USE_FABRIC
+INCPATH += -I/opt/amazon/efa/include
+endif
+
 ifdef ASAN
 CFLAGS += -fsanitize=address -fno-omit-frame-pointer -fno-optimize-sibling-calls
 endif
