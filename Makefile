@@ -27,6 +27,11 @@ LIBS += -lrdmacm -libverbs
 CFLAGS += -DDMLC_USE_RDMA
 endif
 
+ifeq ($(USE_LIBFABRIC), 1)
+LIBS += -lrdmacm
+CFLAGS += -DDMLC_USE_LIBFABRIC
+endif
+
 ifdef ASAN
 CFLAGS += -fsanitize=address -fno-omit-frame-pointer -fno-optimize-sibling-calls
 endif

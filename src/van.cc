@@ -17,6 +17,7 @@
 #include "./meta.pb.h"
 #include "./network_utils.h"
 #include "./rdma_van.h"
+#include "./libfabric_van.h"
 #include "./resender.h"
 #include "./zmq_van.h"
 #define USE_PROFILING
@@ -75,6 +76,10 @@ Van *Van::Create(const std::string &type) {
 #ifdef DMLC_USE_RDMA
   } else if (type == "rdma") {
     return new RDMAVan();
+#endif
+#ifdef DMLC_USE_LIBFABRIC
+  } else if (type == "libfabric") {
+    return new LibfabricVan();
 #endif
   } else {
     LOG(FATAL) << "unsupported van type: " << type;
@@ -165,7 +170,7 @@ void Van::UpdateLocalID(Message* msg, std::unordered_set<int>* deadnodes_set,
   if (msg->meta.sender == Meta::kEmpty) {
     CHECK(is_scheduler_);
     CHECK_EQ(ctrl.node.size(), 1);
-    if (static_cast<int>(nodes->control.node.size()) < num_nodes) {
+    if (nodes->control.node.size() < num_nodes) {
       nodes->control.node.push_back(ctrl.node[0]);
     } else {
       // some node dies and restarts
