@@ -12,9 +12,9 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <poll.h>
+#include <stdio.h>
 //#include <netdb.h>
 //#include <stddef.h>
-//#include <stdio.h>
 //#include <stdlib.h>
 
 #include <rdma/rdma_cma.h>
@@ -35,7 +35,8 @@
 namespace ps {
 
 static const int kRdmaListenBacklog = 128;
-//
+static const int kMaxHostnameLength = 16;
+
 //static const int kStartDepth = 128;
 //static const int kWriteDepth = kStartDepth;
 //
@@ -46,7 +47,6 @@ static const int kRdmaListenBacklog = 128;
 //static const int kTimeoutms = 1000;
 //static const int kMaxConcurrentWorkRequest =
 //    kRxDepth + kStartDepth + kReplyDepth + kWriteDepth;
-//static const int kMaxHostnameLength = 16;
 //static const int kMaxDataFields = 4;
 //static const size_t kAlignment = 8;
 //
@@ -249,13 +249,13 @@ static const int kRdmaListenBacklog = 128;
 //  std::vector<SArray<char>> data;
 //  std::vector<std::pair<MRPtr, size_t>> mrs;
 //};
-//
-//struct RequestContext {
-//  uint32_t node;
-//  uint16_t port;
-//  char hostname[kMaxHostnameLength];
-//};
-//
+
+struct RequestContext {
+  uint32_t node;
+  uint16_t port;
+  char hostname[kMaxHostnameLength];
+};
+
 //static_assert(std::is_pod<RendezvousStart>::value,
 //              "RendezvousStart must be a POD type.");
 //static_assert(std::is_pod<RendezvousReply>::value,
@@ -1185,7 +1185,7 @@ class LibfabricVan : public Van {
       // TODO(clan): Reorder the list according to the event frequency
       switch (event->event) {
         case RDMA_CM_EVENT_CONNECT_REQUEST:
-          // OnConnectRequest(event);
+          OnConnectRequest(event);
           break;
         case RDMA_CM_EVENT_ADDR_RESOLVED:
           // OnAddrResolved(event);
@@ -1227,46 +1227,48 @@ class LibfabricVan : public Van {
 //    endpoint->cv.notify_all();
 //  }
 //
-//  void OnConnectRequest(struct rdma_cm_event *event) {
-//    struct rdma_cm_id *id = event->id;
-//    CHECK_NOTNULL(id);
-//
-//    CHECK_LE(sizeof(RequestContext), event->param.conn.private_data_len)
-//        << "RequestContext size mismatch. Actual: "
-//        << (size_t)event->param.conn.private_data_len
-//        << ", Expected: " << sizeof(RequestContext);
-//    CHECK_NOTNULL(event->param.conn.private_data);
-//
-//    const RequestContext *remote_ctx = reinterpret_cast<const RequestContext *>(
-//        event->param.conn.private_data);
-//
-//    const auto r = incoming_.emplace(std::make_unique<Endpoint>());
-//    Endpoint *endpoint = r.first->get();
-//    endpoint->SetNodeID(remote_ctx->node);
-//    endpoint->cm_id = id;
-//    id->context = endpoint;
-//
-//    if (context_ == nullptr) {
-//      InitContext(id->verbs);
-//    }
-//
-//    endpoint->Init(cq_, pd_);
-//
-//    RequestContext ctx;
-//    ctx.node = static_cast<uint32_t>(my_node_.id);
-//    ctx.port = static_cast<uint16_t>(my_node_.port);
-//    snprintf(ctx.hostname, kMaxHostnameLength, "%s", my_node_.hostname.c_str());
-//
-//    struct rdma_conn_param cm_params;
-//    memset(&cm_params, 0, sizeof(cm_params));
-//    cm_params.retry_count = 7;
-//    cm_params.rnr_retry_count = 7;
-//    cm_params.private_data = &ctx;
-//    cm_params.private_data_len = sizeof(RequestContext);
-//
-//    CHECK_EQ(rdma_accept(id, &cm_params), 0)
-//        << "Accept RDMA connection failed: " << strerror(errno);
-//  }
+  void OnConnectRequest(struct rdma_cm_event *event) {
+    struct rdma_cm_id *id = event->id;
+    CHECK_NOTNULL(id);
+
+    CHECK_LE(sizeof(RequestContext), event->param.conn.private_data_len)
+        << "RequestContext size mismatch. Actual: "
+        << (size_t)event->param.conn.private_data_len
+        << ", Expected: " << sizeof(RequestContext);
+    CHECK_NOTNULL(event->param.conn.private_data);
+
+    const RequestContext *remote_ctx = reinterpret_cast<const RequestContext *>(
+        event->param.conn.private_data);
+
+    /*
+    const auto r = incoming_.emplace(std::make_unique<Endpoint>());
+    Endpoint *endpoint = r.first->get();
+    endpoint->SetNodeID(remote_ctx->node);
+    endpoint->cm_id = id;
+    id->context = endpoint;
+
+    if (context_ == nullptr) {
+      InitContext(id->verbs);
+    }
+
+    endpoint->Init(cq_, pd_);
+    */
+
+    RequestContext ctx;
+    ctx.node = static_cast<uint32_t>(my_node_.id);
+    ctx.port = static_cast<uint16_t>(my_node_.port);
+    snprintf(ctx.hostname, kMaxHostnameLength, "%s", my_node_.hostname.c_str());
+
+    struct rdma_conn_param cm_params;
+    memset(&cm_params, 0, sizeof(cm_params));
+    cm_params.retry_count = 7;
+    cm_params.rnr_retry_count = 7;
+    cm_params.private_data = &ctx;
+    cm_params.private_data_len = sizeof(RequestContext);
+
+    CHECK_EQ(rdma_accept(id, &cm_params), 0)
+        << "Accept RDMA connection failed: " << strerror(errno);
+  }
 //
 //  // Resolve a route after address is resolved
 //  void OnAddrResolved(struct rdma_cm_event *event) {
