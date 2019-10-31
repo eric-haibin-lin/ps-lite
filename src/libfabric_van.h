@@ -550,18 +550,18 @@ class LibfabricVan : public Van {
   }
 
   void Connect(const Node &node) override {
-//    PS_VLOG(1) << "Connecting to " << my_node_.ShortDebugString();
-//    CHECK_NE(node.id, node.kEmpty);
-//    CHECK_NE(node.port, node.kEmpty);
-//    CHECK(node.hostname.size());
-//
-//    // worker doesn't need to connect to the other workers. same for server
-//    if ((node.role == my_node_.role) && (node.id != my_node_.id)) {
-//      return;
-//    }
-//
-//    std::string node_host_ip = node.hostname + ":" + std::to_string(node.port);
-//    if (node.id != Node::kEmpty) {
+    PS_VLOG(1) << "Connecting to " << my_node_.ShortDebugString();
+    CHECK_NE(node.id, node.kEmpty);
+    CHECK_NE(node.port, node.kEmpty);
+    CHECK(node.hostname.size());
+
+    // worker doesn't need to connect to the other workers. same for server
+    if ((node.role == my_node_.role) && (node.id != my_node_.id)) {
+      return;
+    }
+
+    std::string node_host_ip = node.hostname + ":" + std::to_string(node.port);
+    if (node.id != Node::kEmpty) {
 //      auto it = endpoints_.find(node.id);
 //
 //      // if there is an endpoint with pending connection
@@ -635,7 +635,7 @@ class LibfabricVan : public Van {
 //      }
 //
 //      freeaddrinfo(remote_addr);
-//    }
+    }
   }
 //
 //  bool IsValidPushpull(const Message &msg) {
