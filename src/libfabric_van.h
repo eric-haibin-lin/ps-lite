@@ -1276,34 +1276,35 @@ class LibfabricVan : public Van {
     CHECK_EQ(rdma_resolve_route(id, kTimeoutms), 0)
         << "Resolve RDMA route failed";
   }
-//
-//  // Make a connection after route is resolved
-//  void OnRouteResolved(struct rdma_cm_event *event) {
-//    struct rdma_cm_id *id = event->id;
-//    Endpoint *endpoint = reinterpret_cast<Endpoint *>(id->context);
-//
-//    if (context_ == nullptr) {
-//      InitContext(id->verbs);
-//    }
-//
-//    endpoint->Init(cq_, pd_);
-//
-//    RequestContext ctx;
-//    ctx.node = static_cast<uint32_t>(my_node_.id);
-//    ctx.port = static_cast<uint16_t>(my_node_.port);
-//    snprintf(ctx.hostname, kMaxHostnameLength, "%s", my_node_.hostname.c_str());
-//
-//    struct rdma_conn_param cm_params;
-//    memset(&cm_params, 0, sizeof(cm_params));
-//    cm_params.retry_count = 7;
-//    cm_params.rnr_retry_count = 7;
-//    cm_params.private_data = &ctx;
-//    cm_params.private_data_len = sizeof(RequestContext);
-//
-//    CHECK_EQ(rdma_connect(id, &cm_params), 0)
-//        << "RDMA connect failed" << strerror(errno);
-//  }
-//
+
+  // Make a connection after route is resolved
+  void OnRouteResolved(struct rdma_cm_event *event) {
+    struct rdma_cm_id *id = event->id;
+    /*
+    Endpoint *endpoint = reinterpret_cast<Endpoint *>(id->context);
+
+    if (context_ == nullptr) {
+      InitContext(id->verbs);
+    }
+
+    endpoint->Init(cq_, pd_);
+    */
+    RequestContext ctx;
+    ctx.node = static_cast<uint32_t>(my_node_.id);
+    ctx.port = static_cast<uint16_t>(my_node_.port);
+    snprintf(ctx.hostname, kMaxHostnameLength, "%s", my_node_.hostname.c_str());
+
+    struct rdma_conn_param cm_params;
+    memset(&cm_params, 0, sizeof(cm_params));
+    cm_params.retry_count = 7;
+    cm_params.rnr_retry_count = 7;
+    cm_params.private_data = &ctx;
+    cm_params.private_data_len = sizeof(RequestContext);
+
+    CHECK_EQ(rdma_connect(id, &cm_params), 0)
+        << "RDMA connect failed" << strerror(errno);
+  }
+
 //  void OnConnected(struct rdma_cm_event *event) {
 //    struct rdma_cm_id *id = event->id;
 //    CHECK(id) << "rdma_cm_id not found.";
