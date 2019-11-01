@@ -30,6 +30,7 @@ endif
 ifeq ($(USE_LIBFABRIC), 1)
 LIBS += -lrdmacm
 CFLAGS += -DDMLC_USE_LIBFABRIC
+INCPATH += -I/opt/amazon/efa/include
 endif
 
 ifdef ASAN

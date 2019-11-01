@@ -1,8 +1,6 @@
 /**
  *  Copyright (c) 2018-2019 Bytedance Inc.
- *  Author: lanchang@bytedance.com (Chang Lan)
- *          jiangyimin@bytedance.com (Yimin Jiang)
- *          chenjingrong@bytedance.com (Jingrong Chen)
+ *  Copyright (c) 2018 Amazon.com, Inc. or its affiliates. All rights reserved.
 */
 #ifndef PS_LIBFABRIC_VAN_H_
 #define PS_LIBFABRIC_VAN_H_
@@ -28,7 +26,9 @@
 //#include <tuple>
 //#include <unordered_map>
 //#include <vector>
-//
+
+#include <rdma/fabric.h>
+
 #include "ps/internal/threadsafe_queue.h"
 #include "ps/internal/van.h"
 
@@ -37,6 +37,108 @@ namespace ps {
 static const int kRdmaListenBacklog = 128;
 static const int kMaxHostnameLength = 16;
 static const int kTimeoutms = 1000;
+
+enum RequestState {
+  kRequestCreated = 0,
+  kRequestPending,
+  kRequestCompleted,
+  kRequestError,
+};
+
+enum RequestDirection {
+  kRequestSend = 1,
+  kRequestRecv,
+};
+
+struct Request {
+  // Associated Comm object
+  //union {
+  //  listenComm_t *stenComm_tlComm;
+  //  sendComm_t *sComm;
+  //  recvComm_t *rComm;
+  //};
+
+  // Buffer index
+  uint64_t buffer_index;
+
+  // Associated OFI Context
+  struct fi_context ctx;
+
+  // Associated Device ID
+  //int dev;
+
+  // Size of completed request
+  size_t size;
+
+  // State of request
+  RequestState state;
+
+  // Direction of request
+  RequestDirection direction;
+};
+
+
+struct PendingReq {
+  // Associated request
+  Request* ofi_req;
+
+  // Send/Recv Metadata
+  void *data;
+  size_t len;
+  int type;
+};
+
+struct PendingReqElem {
+  PendingReqElem* next;
+
+  // Buffer index
+  uint64_t buffer_index;
+
+  // Pending request to retry
+  PendingReq pending_req;
+};
+
+
+struct PendingReqQueue {
+  PendingReqElem *head;
+  PendingReqElem *tail;
+};
+
+
+// TDDO call it an endpoint?
+struct Endpoint {
+  // Current available tag ID.
+  // XXX In case multiple NICs are available
+  uint64_t tag;
+
+  // Maximum supported tag ID
+  uint64_t max_tag;
+
+  // Count of CQEs to read from CQ
+  uint64_t num_cqes;
+
+  // Provider name
+  char *prov_name;
+
+  // Fabric handle
+  struct fid_fabric *fabric;
+
+  // Access Domain handle
+  struct fid_domain *domain;
+
+  // Endpoint handle to communicate to
+  struct fid_ep *ep;
+
+  // Address vector handle
+  struct fid_av *av;
+
+  // Completion Queue handle
+  struct fid_cq *cq;
+
+  // Pending requests queue
+  PendingReqQueue *pending_req_q;
+};
+
 
 //static const int kStartDepth = 128;
 //static const int kWriteDepth = kStartDepth;
