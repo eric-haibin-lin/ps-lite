@@ -11,7 +11,7 @@
 #include <fcntl.h>
 #include <poll.h>
 #include <stdio.h>
-//#include <netdb.h>
+#include <netdb.h>
 //#include <stddef.h>
 //#include <stdlib.h>
 
@@ -37,7 +37,8 @@ namespace ps {
 static const int kRdmaListenBacklog = 128;
 static const int kMaxHostnameLength = 16;
 static const int kTimeoutms = 1000;
-
+static const int kMaxResolveRetry = 50000;
+static const int kBasePort = 9010;
 
 struct Stack {
   int *array;
@@ -150,7 +151,7 @@ struct PendingReqQueue {
 
 
 // TDDO call it an endpoint?
-struct Endpoint {
+struct OfiEndpoint {
   // Current available tag ID.
   // XXX In case multiple NICs are available
   uint64_t tag;
@@ -195,9 +196,6 @@ struct Endpoint {
 //    kRxDepth + kStartDepth + kReplyDepth + kWriteDepth;
 //static const int kMaxDataFields = 4;
 //static const size_t kAlignment = 8;
-//
-//static const int kMaxResolveRetry = 50000;
-//static const int kBasePort = 9010;
 //
 //template <typename T>
 //static inline T align_floor(T v, T align) {
@@ -450,15 +448,15 @@ struct RequestContext {
 //  T *table_[kMaxEntries];
 //};
 //
-//struct Endpoint {
-//  enum ConnectionStatus { IDLE, CONNECTING, CONNECTED, REJECTED };
-//
-//  ConnectionStatus status;
-//  int node_id;
-//  std::condition_variable cv;
-//  std::mutex connect_mu;
-//  struct rdma_cm_id *cm_id;
-//
+struct Endpoint {
+  enum ConnectionStatus { IDLE, CONNECTING, CONNECTED, REJECTED };
+
+  ConnectionStatus status;
+  int node_id;
+  std::condition_variable cv;
+  std::mutex connect_mu;
+  struct rdma_cm_id *cm_id;
+
 //  WRContext rx_ctx[kRxDepth];
 //
 //  WRContext start_ctx[kStartDepth];
@@ -470,8 +468,10 @@ struct RequestContext {
 //  ThreadsafeQueue<WRContext *> free_write_ctx;
 //
 //  Endpoint() : status(IDLE), node_id(Node::kEmpty), cm_id(nullptr), rx_ctx() {}
-//
-//  ~Endpoint() {
+//  XXX: rx_ctx removed
+  Endpoint() : status(IDLE), node_id(Node::kEmpty), cm_id(nullptr) {}
+
+  ~Endpoint() {
 //    for (int i = 0; i < kRxDepth; ++i) {
 //      if (!(rx_ctx[i].buffer)) {
 //        continue;
@@ -501,18 +501,19 @@ struct RequestContext {
 //      }
 //    }
 //
-//    rdma_destroy_qp(cm_id);
-//    CHECK_EQ(rdma_destroy_id(cm_id), 0) << strerror(errno);
-//  }
-//
-//  void Disconnect() {
-//    std::unique_lock<std::mutex> lk(connect_mu);
-//    CHECK_EQ(rdma_disconnect(cm_id), 0) << strerror(errno);
-//    cv.wait(lk, [this] { return status == IDLE; });
-//  }
-//
-//  void SetNodeID(int id) { node_id = id; }
-//
+//  TODO: is rdma_destroy_qp the same as ibv_destroy_qp?
+    rdma_destroy_qp(cm_id);
+    CHECK_EQ(rdma_destroy_id(cm_id), 0) << strerror(errno);
+  }
+
+  void Disconnect() {
+    std::unique_lock<std::mutex> lk(connect_mu);
+    CHECK_EQ(rdma_disconnect(cm_id), 0) << strerror(errno);
+    cv.wait(lk, [this] { return status == IDLE; });
+  }
+
+  void SetNodeID(int id) { node_id = id; }
+
 //  void InitSendContextHelper(struct ibv_pd *pd, WRContext *ctx,
 //                             ThreadsafeQueue<WRContext *> *queue, size_t num,
 //                             WRContextType type) {
@@ -583,8 +584,8 @@ struct RequestContext {
 //    CHECK_EQ(ibv_post_recv(cm_id->qp, &wr, &bad_wr), 0)
 //        << "ibv_post_recv failed.";
 //  }
-//};
-//
+};
+
 class FabricVan : public Van {
  public:
   FabricVan() {}
@@ -708,82 +709,82 @@ class FabricVan : public Van {
 
     std::string node_host_ip = node.hostname + ":" + std::to_string(node.port);
     if (node.id != Node::kEmpty) {
-//      auto it = endpoints_.find(node.id);
-//
-//      // if there is an endpoint with pending connection
-//      if (it != endpoints_.end()) {
-//        endpoints_.erase(it);
-//      }
-//
-//      Endpoint *endpoint;
-//      endpoints_[node.id] = std::make_unique<Endpoint>();
-//      endpoint = endpoints_[node.id].get();
-//
-//      endpoint->SetNodeID(node.id);
-//
-//      struct addrinfo *remote_addr;
-//      CHECK_EQ(
-//          getaddrinfo(node.hostname.c_str(), std::to_string(node.port).c_str(),
-//                      nullptr, &remote_addr),
-//          0);
-//
-//      while (endpoint->status != Endpoint::CONNECTED) {
-//        std::unique_lock<std::mutex> lk(endpoint->connect_mu);
-//        endpoint->status = Endpoint::CONNECTING;
-//
-//        if (endpoint->cm_id != nullptr) {
-//          rdma_destroy_qp(endpoint->cm_id);
-//          CHECK_EQ(rdma_destroy_id(endpoint->cm_id), 0) << strerror(errno);
-//          endpoint->cm_id = nullptr;
-//        }
-//
-//        CHECK_EQ(rdma_create_id(event_channel_, &endpoint->cm_id, nullptr,
-//                                RDMA_PS_TCP),
-//                 0)
-//            << "Create RDMA connection identifier failed";
-//        endpoint->cm_id->context = endpoint;
-//
-//        int max_retry = kMaxResolveRetry;
-//        int port = kBasePort;
-//        unsigned seed = static_cast<unsigned>(time(NULL) + port);
-//        auto val = Environment::Get()->find("DMLC_NODE_HOST");
-//        if (val) {
-//          struct sockaddr_in addr;
-//          memset(&addr, 0, sizeof(addr)); 
-//          addr.sin_addr.s_addr = inet_addr(val);
-//          addr.sin_family = AF_INET;
-//          for (int i = 0; i < max_retry + 1; ++i) {
-//            addr.sin_port = htons(port);
-//            if (rdma_resolve_addr(endpoint->cm_id, 
-//                                  reinterpret_cast<struct sockaddr *>(&addr),
-//                                  remote_addr->ai_addr, kTimeoutms) == 0) {
-//              break;
-//            }
-//            if (i == max_retry) {
-//              port = -1;
-//            } else {
-//              port = 10000 + rand_r(&seed) % 40000;
-//            }
-//          }
-//        } else {
-//          CHECK_EQ(rdma_resolve_addr(endpoint->cm_id, nullptr,
-//                                     remote_addr->ai_addr, kTimeoutms),
-//                   0)
-//              << "Resolve RDMA address failed with errno: " << strerror(errno);
-//        }
-//
-//        endpoint->cv.wait(lk, [endpoint] {
-//          return endpoint->status != Endpoint::CONNECTING;
-//        });
-//
-//        if (endpoint->status == Endpoint::CONNECTED) break;
-//        std::this_thread::sleep_for(std::chrono::milliseconds(500));
-//      }
-//
-//      freeaddrinfo(remote_addr);
+      auto it = endpoints_.find(node.id);
+
+      // if there is an endpoint with pending connection
+      if (it != endpoints_.end()) {
+        endpoints_.erase(it);
+      }
+
+      Endpoint *endpoint;
+      endpoints_[node.id] = std::make_unique<Endpoint>();
+      endpoint = endpoints_[node.id].get();
+
+      endpoint->SetNodeID(node.id);
+
+      struct addrinfo *remote_addr;
+      CHECK_EQ(
+          getaddrinfo(node.hostname.c_str(), std::to_string(node.port).c_str(),
+                      nullptr, &remote_addr),
+          0);
+
+      while (endpoint->status != Endpoint::CONNECTED) {
+        std::unique_lock<std::mutex> lk(endpoint->connect_mu);
+        endpoint->status = Endpoint::CONNECTING;
+
+        if (endpoint->cm_id != nullptr) {
+          rdma_destroy_qp(endpoint->cm_id);
+          CHECK_EQ(rdma_destroy_id(endpoint->cm_id), 0) << strerror(errno);
+          endpoint->cm_id = nullptr;
+        }
+
+        CHECK_EQ(rdma_create_id(event_channel_, &endpoint->cm_id, nullptr,
+                                RDMA_PS_TCP),
+                 0)
+            << "Create RDMA connection identifier failed";
+        endpoint->cm_id->context = endpoint;
+
+        int max_retry = kMaxResolveRetry;
+        int port = kBasePort;
+        unsigned seed = static_cast<unsigned>(time(NULL) + port);
+        auto val = Environment::Get()->find("DMLC_NODE_HOST");
+        if (val) {
+          struct sockaddr_in addr;
+          memset(&addr, 0, sizeof(addr));
+          addr.sin_addr.s_addr = inet_addr(val);
+          addr.sin_family = AF_INET;
+          for (int i = 0; i < max_retry + 1; ++i) {
+            addr.sin_port = htons(port);
+            if (rdma_resolve_addr(endpoint->cm_id,
+                                  reinterpret_cast<struct sockaddr *>(&addr),
+                                  remote_addr->ai_addr, kTimeoutms) == 0) {
+              break;
+            }
+            if (i == max_retry) {
+              port = -1;
+            } else {
+              port = 10000 + rand_r(&seed) % 40000;
+            }
+          }
+        } else {
+          CHECK_EQ(rdma_resolve_addr(endpoint->cm_id, nullptr,
+                                     remote_addr->ai_addr, kTimeoutms),
+                   0)
+              << "Resolve RDMA address failed with errno: " << strerror(errno);
+        }
+
+        endpoint->cv.wait(lk, [endpoint] {
+          return endpoint->status != Endpoint::CONNECTING;
+        });
+
+        if (endpoint->status == Endpoint::CONNECTED) break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+      }
+
+      freeaddrinfo(remote_addr);
     }
   }
-//
+
 //  bool IsValidPushpull(const Message &msg) {
 //    if (!msg.meta.control.empty()) return false;
 //    if (msg.meta.simple_app) return false;
@@ -1104,7 +1105,7 @@ class FabricVan : public Van {
 
     return -1;
   }
-//
+
 // private:
 //  void InitContext(struct ibv_context *context) {
 //    context_ = context;
@@ -1358,7 +1359,7 @@ class FabricVan : public Van {
 
   void OnRejected(struct rdma_cm_event *event) {
     struct rdma_cm_id *id = event->id;
-    /*
+
     Endpoint *endpoint = reinterpret_cast<Endpoint *>(id->context);
 
     auto it = endpoints_.find(endpoint->node_id);
@@ -1372,7 +1373,7 @@ class FabricVan : public Van {
       endpoint->status = Endpoint::REJECTED;
     }
     endpoint->cv.notify_all();
-    */
+
   }
 
   void OnConnectRequest(struct rdma_cm_event *event) {
@@ -1388,19 +1389,20 @@ class FabricVan : public Van {
     const RequestContext *remote_ctx = reinterpret_cast<const RequestContext *>(
         event->param.conn.private_data);
 
-    /*
+
     const auto r = incoming_.emplace(std::make_unique<Endpoint>());
     Endpoint *endpoint = r.first->get();
     endpoint->SetNodeID(remote_ctx->node);
     endpoint->cm_id = id;
     id->context = endpoint;
 
-    if (context_ == nullptr) {
-      InitContext(id->verbs);
-    }
+    // TODO init context for ofi
+    //if (context_ == nullptr) {
+    //  InitContext(id->verbs);
+    //}
 
-    endpoint->Init(cq_, pd_);
-    */
+    // init for ofi
+    //endpoint->Init(cq_, pd_);
 
     RequestContext ctx;
     ctx.node = static_cast<uint32_t>(my_node_.id);
@@ -1428,15 +1430,17 @@ class FabricVan : public Van {
   // Make a connection after route is resolved
   void OnRouteResolved(struct rdma_cm_event *event) {
     struct rdma_cm_id *id = event->id;
-    /*
+
     Endpoint *endpoint = reinterpret_cast<Endpoint *>(id->context);
 
-    if (context_ == nullptr) {
-      InitContext(id->verbs);
-    }
+    //if (context_ == nullptr) {
+      // TODO init context for ofi
+      //InitContext(id->verbs);
+    //}
 
-    endpoint->Init(cq_, pd_);
-    */
+    // TODO init for ofi
+    //endpoint->Init(cq_, pd_);
+
     RequestContext ctx;
     ctx.node = static_cast<uint32_t>(my_node_.id);
     ctx.port = static_cast<uint16_t>(my_node_.port);
@@ -1456,42 +1460,42 @@ class FabricVan : public Van {
   void OnConnected(struct rdma_cm_event *event) {
     struct rdma_cm_id *id = event->id;
     CHECK(id) << "rdma_cm_id not found.";
-    /*
+
     Endpoint *endpoint = reinterpret_cast<Endpoint *>(id->context);
     CHECK(endpoint) << "Endpoint not found.";
-    */
+
     if (cq_polling_thread_ == nullptr) {
       cq_polling_thread_.reset(new std::thread(&FabricVan::PollCQ, this));
     }
-    /*
+
     CHECK_EQ(endpoint->cm_id, id);
     {
       std::lock_guard<std::mutex> lk(endpoint->connect_mu);
       endpoint->status = Endpoint::CONNECTED;
     }
     endpoint->cv.notify_all();
-    */
+
   }
 
   void OnDisconnected(struct rdma_cm_event *event) {
     LOG(INFO) << "OnDisconnected from Node " << my_node_.id;
     struct rdma_cm_id *id = event->id;
-    /*
+
     Endpoint *endpoint = reinterpret_cast<Endpoint *>(id->context);
     {
       std::lock_guard<std::mutex> lk(endpoint->connect_mu);
       endpoint->status = Endpoint::IDLE;
     }
     endpoint->cv.notify_all();
-    */
+
   }
 
 //  AddressPool<BufferContext> addr_pool_;
 //  std::unique_ptr<SimpleMempool> mempool_;
 //
 //
-//  std::unordered_map<int, std::unique_ptr<Endpoint>> endpoints_;
-//  std::unordered_set<std::unique_ptr<Endpoint>> incoming_;
+  std::unordered_map<int, std::unique_ptr<Endpoint>> endpoints_;
+  std::unordered_set<std::unique_ptr<Endpoint>> incoming_;
 
   std::atomic<bool> should_stop_;
   struct rdma_event_channel *event_channel_ = nullptr;
