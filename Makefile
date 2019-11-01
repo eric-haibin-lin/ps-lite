@@ -27,9 +27,9 @@ LIBS += -lrdmacm -libverbs
 CFLAGS += -DDMLC_USE_RDMA
 endif
 
-ifeq ($(USE_LIBFABRIC), 1)
+ifeq ($(USE_FABRIC), 1)
 LIBS += -lrdmacm
-CFLAGS += -DDMLC_USE_LIBFABRIC
+CFLAGS += -DDMLC_USE_FABRIC
 INCPATH += -I/opt/amazon/efa/include
 endif
 

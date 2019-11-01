@@ -77,9 +77,9 @@ Van *Van::Create(const std::string &type) {
   } else if (type == "rdma") {
     return new RDMAVan();
 #endif
-#ifdef DMLC_USE_LIBFABRIC
-  } else if (type == "libfabric") {
-    return new LibfabricVan();
+#ifdef DMLC_USE_FABRIC
+  } else if (type == "fabric") {
+    return new FabricVan();
 #endif
   } else {
     LOG(FATAL) << "unsupported van type: " << type;

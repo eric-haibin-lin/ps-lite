@@ -2,10 +2,10 @@
  *  Copyright (c) 2018-2019 Bytedance Inc.
  *  Copyright (c) 2018 Amazon.com, Inc. or its affiliates. All rights reserved.
 */
-#ifndef PS_LIBFABRIC_VAN_H_
-#define PS_LIBFABRIC_VAN_H_
+#ifndef PS_FABRIC_VAN_H_
+#define PS_FABRIC_VAN_H_
 
-#ifdef DMLC_USE_LIBFABRIC
+#ifdef DMLC_USE_FABRIC
 
 #include <errno.h>
 #include <fcntl.h>
@@ -38,6 +38,50 @@ static const int kRdmaListenBacklog = 128;
 static const int kMaxHostnameLength = 16;
 static const int kTimeoutms = 1000;
 
+
+struct Stack {
+  int *array;
+  int top;
+  int size;
+};
+
+struct FreeList {
+  // Array of free buffers
+  void *buffers;
+
+  // Stack of free buffer indexes
+  Stack *free_index;
+
+  // Size of buffers array
+  uint64_t size;
+};
+
+struct ListenComm {
+  uint64_t tag;
+  struct fid_ep *local_ep;
+  //int dev;
+  bool accepted;
+};
+
+struct SendComm {
+  //int dev;
+  uint64_t tag;
+  uint64_t num_inflight_reqs;
+  fi_addr_t remote_ep;
+  struct fid_ep *local_ep;
+  FreeList *reqs_fl;
+  FreeList *pending_reqs_fl;
+};
+
+struct RecvComm {
+  //int dev;
+  uint64_t tag;
+  uint64_t num_inflight_reqs;
+  fi_addr_t remote_ep;
+  struct fid_ep *local_ep;
+  FreeList *reqs_fl;
+};
+
 enum RequestState {
   kRequestCreated = 0,
   kRequestPending,
@@ -52,11 +96,11 @@ enum RequestDirection {
 
 struct Request {
   // Associated Comm object
-  //union {
-  //  listenComm_t *stenComm_tlComm;
-  //  sendComm_t *sComm;
-  //  recvComm_t *rComm;
-  //};
+  union {
+    ListenComm *l_comm;
+    SendComm *s_comm;
+    RecvComm *r_comm;
+  };
 
   // Buffer index
   uint64_t buffer_index;
@@ -541,10 +585,10 @@ struct RequestContext {
 //  }
 //};
 //
-class LibfabricVan : public Van {
+class FabricVan : public Van {
  public:
-  LibfabricVan() {}
-  ~LibfabricVan() {}
+  FabricVan() {}
+  ~FabricVan() {}
 
  protected:
   void Start(int customer_id) override {
@@ -567,7 +611,7 @@ class LibfabricVan : public Van {
       CHECK(event_channel_) << "Create RDMA event channel failed";
 
       cm_event_polling_thread_.reset(
-          new std::thread(&LibfabricVan::PollEvents, this));
+          new std::thread(&FabricVan::PollEvents, this));
     }
 
     start_mu_.unlock();
@@ -1417,7 +1461,7 @@ class LibfabricVan : public Van {
     CHECK(endpoint) << "Endpoint not found.";
     */
     if (cq_polling_thread_ == nullptr) {
-      cq_polling_thread_.reset(new std::thread(&LibfabricVan::PollCQ, this));
+      cq_polling_thread_.reset(new std::thread(&FabricVan::PollCQ, this));
     }
     /*
     CHECK_EQ(endpoint->cm_id, id);
