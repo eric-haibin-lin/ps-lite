@@ -196,17 +196,17 @@ struct OfiEndpoint {
 //    kRxDepth + kStartDepth + kReplyDepth + kWriteDepth;
 //static const int kMaxDataFields = 4;
 //static const size_t kAlignment = 8;
-//
-//template <typename T>
-//static inline T align_floor(T v, T align) {
-//  return v - (v % align);
-//}
-//
-//template <typename T>
-//static inline T align_ceil(T v, T align) {
-//  return align_floor(v + align - 1, align);
-//}
-//
+
+template <typename T>
+static inline T align_floor(T v, T align) {
+  return v - (v % align);
+}
+
+template <typename T>
+static inline T align_ceil(T v, T align) {
+  return align_floor(v + align - 1, align);
+}
+
 //class SimpleMempool {
 // public:
 //  explicit SimpleMempool(struct ibv_pd *pd, size_t size = 0x10000000) {
@@ -609,7 +609,7 @@ class FabricVan : public Van {
 
     if (event_channel_ == nullptr) {
       event_channel_ = rdma_create_event_channel();
-      CHECK(event_channel_) << "Create RDMA event channel failed";
+      CHECK(event_channel_) << "Create RDMA event channel failed: " << strerror(errno);
 
       cm_event_polling_thread_.reset(
           new std::thread(&FabricVan::PollEvents, this));
@@ -785,12 +785,12 @@ class FabricVan : public Van {
     }
   }
 
-//  bool IsValidPushpull(const Message &msg) {
-//    if (!msg.meta.control.empty()) return false;
-//    if (msg.meta.simple_app) return false;
-//    return true;
-//  }
-//
+  bool IsValidPushpull(const Message &msg) {
+    if (!msg.meta.control.empty()) return false;
+    if (msg.meta.simple_app) return false;
+    return true;
+  }
+
 //  uint64_t DecodeKey(SArray<char> keys) { // just a translation, the decoded key might not be readable when we have multiple servers
 //    ps::Key key = 0;
 //    uint64_t coef = 1;
@@ -1332,21 +1332,27 @@ class FabricVan : public Van {
       // TODO(clan): Reorder the list according to the event frequency
       switch (event->event) {
         case RDMA_CM_EVENT_CONNECT_REQUEST:
+          LOG(INFO) << "RDMA_CM_EVENT_CONNECT_REQUEST";
           OnConnectRequest(event);
           break;
         case RDMA_CM_EVENT_ADDR_RESOLVED:
+          LOG(INFO) << "RDMA_CM_EVENT_ADDR_RESOLVED";
           OnAddrResolved(event);
           break;
         case RDMA_CM_EVENT_ROUTE_RESOLVED:
+          LOG(INFO) << "RDMA_CM_EVENT_ROUTE_RESOLVED";
           OnRouteResolved(event);
           break;
         case RDMA_CM_EVENT_ESTABLISHED:
+          LOG(INFO) << "RDMA_CM_EVENT_ESTABLISHED";
           OnConnected(event);
           break;
         case RDMA_CM_EVENT_DISCONNECTED:
+          LOG(INFO) << "RDMA_CM_EVENT_DISCONNECTED";
           OnDisconnected(event);
           break;
         case RDMA_CM_EVENT_REJECTED:
+          LOG(INFO) << "RDMA_CM_EVENT_REJECTED";
           OnRejected(event);
           break;
         default:
