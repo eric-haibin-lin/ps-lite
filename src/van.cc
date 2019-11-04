@@ -18,6 +18,7 @@
 #include "./network_utils.h"
 #include "./rdma_van.h"
 #include "./libfabric_van.h"
+#include "./zmq_conn_van.h"
 #include "./resender.h"
 #include "./zmq_van.h"
 #define USE_PROFILING
@@ -80,6 +81,8 @@ Van *Van::Create(const std::string &type) {
 #ifdef DMLC_USE_FABRIC
   } else if (type == "fabric") {
     return new FabricVan();
+  } else if (type == "fabric2") {
+    return new FabricVan2();
 #endif
   } else {
     LOG(FATAL) << "unsupported van type: " << type;
