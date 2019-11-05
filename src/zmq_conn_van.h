@@ -14,6 +14,7 @@
 #include <tuple>
 #include "ps/internal/threadsafe_queue.h"
 #include "ps/internal/van.h"
+#include "zmq_van.h"
 #if _MSC_VER
 #define rand_r(x) rand()
 #endif
@@ -116,7 +117,6 @@ struct ListenComm {
 };
 
 struct SendComm {
-  //int dev;
   uint64_t tag;
   uint64_t num_inflight_reqs;
   fi_addr_t remote_ep;
@@ -126,7 +126,6 @@ struct SendComm {
 };
 
 struct RecvComm {
-  //int dev;
   uint64_t tag;
   uint64_t num_inflight_reqs;
   fi_addr_t remote_ep;
@@ -243,10 +242,15 @@ struct OfiEndpoint {
   void Start(int customer_id) override {
     // start zmq
     start_mu_.lock();
-    // TODO remove zmq logics
     OfiInit();
-    OfiListen();
+    start_mu_.unlock();
+    customer_id_ = customer_id;
+    ZmqStart();
+    Van::Start(customer_id);
+  }
 
+  void ZmqStart() {
+    start_mu_.lock();
     if (context_ == nullptr) {
       context_ = zmq_ctx_new();
       CHECK(context_ != NULL) << "create 0mq context failed";
@@ -262,11 +266,7 @@ struct OfiEndpoint {
     int byteps_zmq_nthreads = val2 ? atoi(val2) : 4;
     zmq_ctx_set(context_, ZMQ_IO_THREADS, byteps_zmq_nthreads);
     PS_VLOG(1) << "BYTEPS_ZMQ_NTHREADS set to " << byteps_zmq_nthreads;
-
-    Van::Start(customer_id);
   }
-
-
 
   void OfiInit() {
     // Get a list of fi_info structures for a single provider
@@ -346,9 +346,7 @@ struct OfiEndpoint {
   void OfiCreateComponent() {
     // TODO: use smart pointer
     ofi_component_ = (OfiEndpoint*) calloc(1, sizeof(OfiEndpoint));
-    if (DMLC_PS_OFI_UNLIKELY(ofi_component_  == nullptr)) {
-      LOG(FATAL) << "Failed to allocate OfiEndpoint";
-    }
+    CHECK(ofi_component_ != nullptr) << "Failed to allocate OfiEndpoint";
 
     /* Initialize tag and num_cqes */
     ofi_component_->tag = 1;
@@ -360,52 +358,157 @@ struct OfiEndpoint {
 
 
   void OfiListen() {
-    // TODO: save handle locally
-    char ep_name[DMLC_PS_MAX_EP_ADDR] = {0};
-    size_t name_len = sizeof(ep_name);
-
     // Create libfabric components for the given NIC,
     // if not already created, else increase tag ID.
-    uint64_t tag;
     {
       //std::lock_guard<std::mutex> lock(mu_);
       if (DMLC_PS_OFI_UNLIKELY(ofi_component_ == nullptr)) {
         OfiCreateComponent();
       } else {
+        // TODO diable this branch
         ofi_component_->tag++;
         if (ofi_component_->tag == ofi_component_->max_tag) {
           LOG(FATAL) << "Cannot open more connection for the device. Maximum is %ld"
                      << ofi_component_->max_tag;
         }
       }
-      tag = ofi_component_->tag;
+      tag_ = ofi_component_->tag;
     }
 
     // Build handle
-    int ret = fi_getname(&(ofi_component_->ep->fid), (void *)&ep_name, &name_len);
+    int ret = fi_getname(&(ofi_component_->ep->fid), (void *)&ep_name_, &ep_name_len_);
     check_err(ret, "Call to fi_getname() failed");
 
-    // TODO: save (void* handle)
-    //memcpy(handle, ep_name, DMLC_PS_MAX_EP_ADDR);
-    //memcpy(handle + DMLC_PS_MAX_EP_ADDR, &tag, sizeof(tag));
-
     // Build listenComm
-    // TODO: save listen comm
-    //ListenComm *lComm = NULL;
-    //lComm = (ListenComm *)calloc(1, sizeof(ListenComm));
-    //lComm->tag = tag;
-    //lComm->local_ep = ofi_component_->ep;
-    //lComm->accepted = false;
-    //int dev = 0;
-    // TODO fix dev
-    //lComm->dev = dev;
-
-    //*listenComm = lComm;
+    listen_comm_ = (ListenComm *) calloc(1, sizeof(ListenComm));
+    listen_comm_->tag = tag_;
+    listen_comm_->local_ep = ofi_component_->ep;
+    listen_comm_->accepted = false;
+    // int dev = 0;
   }
+
+  void OfiConnect(int dev, void *handle, void **sendComm) {
+    ssize_t rc = 0;
+    char remote_ep_addr[DMLC_PS_MAX_EP_ADDR] = {0};
+    char local_ep_addr[DMLC_PS_MAX_EP_ADDR] = {0};
+    size_t name_len = sizeof(local_ep_addr);
+    fi_addr_t remote_addr;
+    Request *req = NULL;
+    size_t req_size = sizeof(Request);
+
+    // Create libfabric components for the given NIC, if not
+    // already created.
+    {
+      std::lock_guard<std::mutex> lock(mu_);
+      if (DMLC_PS_OFI_UNLIKELY(ofi_component_ == nullptr)) {
+        OfiCreateComponent();
+      }
+    }
+    uint64_t max_tag = ofi_component_->max_tag;
+    uint64_t tag = 0ULL;
+
+    // Parse handle to get tag and remote name
+    // TODO need to store them
+    //memcpy(&remote_ep_addr, (char *)handle, MAX_EP_ADDR);
+    //memcpy(&tag, (char *)handle + MAX_EP_ADDR, sizeof(tag));
+    CHECK(tag >= 1 && tag <= max_tag) << "Received an invalid tag "
+                                      << tag << " for device";
+
+    // Insert remote address into AV
+    int ret = fi_av_insert(ofi_component_->av, (void *)remote_ep_addr, 1,
+                       &remote_addr, 0, NULL);
+    check_err(ret, "Unable to insert remote address into address vector for device");
+
+    // Build SendComm
+    SendComm *sComm = (SendComm *)calloc(1, sizeof(SendComm));
+    CHECK(sComm != nullptr) << "Couldn't allocate SendComm";
+
+    sComm->tag = tag;
+    sComm->local_ep = ofi_component_->ep;
+    sComm->remote_ep = remote_addr;
+
+    // Pre-allocated buffers for data path
+    //ret = allocate_ofi_fl(&sComm->nccl_ofi_reqs_fl, NCCL_OFI_MAX_REQUESTS,
+    //          req_size);
+    //if (OFI_UNLIKELY(ret != 0)) {
+    //  NCCL_OFI_WARN("Could not allocate NCCL OFI requests free list for dev %d",
+    //         dev);
+    //  goto error;
+    //}
+
+  //  req = allocate_nccl_ofi_request(sComm->nccl_ofi_reqs_fl);
+  //  if (OFI_UNLIKELY(req == NULL)) {
+  //      ret = ncclSystemError;
+  //      NCCL_OFI_WARN("Unable to get NCCL OFI request for device %d",
+  //              sComm->dev);
+  //      goto error;
+  //  }
+
+  //  req->sComm = sComm;
+  //  req->direction = NCCL_OFI_SEND;
+
+  //  /* Get local EP address to transfer in the connect message */
+  //  ret = fi_getname(&(ofi_component_->ep->fid),
+  //       (void *)&local_ep_addr,
+  //       &name_len);
+  //  if (ret != 0) {
+  //    NCCL_OFI_WARN("Call to fi_getname() failed with RC: %d, ERROR: %s",
+  //            ret, fi_strerror(-ret));
+  //    ret = ncclSystemError;
+  //    goto error;
+  //  }
+
+  //  /* Send "connect" message to remote EP */
+  //  do {
+  //    /*
+  //    //TODO: replace it with API of FI_INJECT type when most of
+  //    //   * providers can support it, so that need for completion check
+  //    //        * below can be lifted.
+  //    //             */
+  //    rc = fi_tsend(sComm->local_ep, (void *)&local_ep_addr,
+  //            MAX_EP_ADDR, NULL, sComm->remote_ep,
+  //            sComm->tag | ~max_tag, &req->ctx);
+  //    if (rc == 0)
+  //      break;
+  //    else if (rc == -FI_EAGAIN) {
+  //      /*
+  // *        * Process completions so that you have enough
+  // *               * resources for sending connect message
+  // *                      */
+  //      ret = nccl_ofi_progress(ofi_component_);
+  //      if (OFI_UNLIKELY(ret != 0))
+  //        goto error;
+  //    }
+  //    else {
+  //      NCCL_OFI_WARN("Unable to send connect message for dev %d. RC: %zd, ERROR: %s",
+  //             dev, rc, fi_strerror(-rc));
+  //      ret = ncclSystemError;
+  //      goto error;
+  //    }
+  //  } while (true);
+
+  //  /* Ensure the message is sent. */
+  //  do {
+  //    ret = nccl_ofi_progress(ofi_component_);
+  //    if (OFI_UNLIKELY(ret != 0))
+  //      goto error;
+  //  } while (req->state != NCCL_OFI_REQ_COMPLETED);
+  //
+  //  *sendComm = sComm;
+
+  //  goto exit;
+
+  //exit:
+  //  if (req)
+  //    free_nccl_ofi_req(req, false);
+  //  return ret;
+  }
+
 
 
   void Stop() override {
     PS_VLOG(1) << my_node_.ShortDebugString() << " is stopping";
+    // include/rdma/fabric.h:typedef uint64_t          fi_addr_t;
     Van::Stop();
     // join all threads
     should_stop_ = true;
@@ -427,7 +530,177 @@ struct OfiEndpoint {
     context_ = nullptr;
   }
 
+  struct pair_hash {
+  public:
+    template <typename T, typename U>
+    std::size_t operator()(const std::pair<T, U> &x) const
+    {
+      return std::hash<T>()(x.first) ^ std::hash<U>()(x.second);
+    }
+  };
+
   int Bind(const Node& node, int max_retry) override {
+    OfiListen();
+
+    is_worker_ = (node.role == Node::WORKER ? true : false);
+    int zmq_port = ZmqBind(node, max_retry);
+    if (node.role == Node::SCHEDULER) {
+      auto num_instances = Postoffice::Get()->num_servers() + Postoffice::Get()->num_workers();
+      for (int i = 0; i < num_instances; i++) {
+        Message msg_recv;
+        int bytes = ZmqRecvMsg(&msg_recv);
+        LOG(INFO) << "Received " << bytes << " bytes in scheduler";
+
+        Node key = msg_recv.meta.control.node[0];
+        std::string hostname = key.hostname;
+        int port = key.port;
+        Node value = msg_recv.meta.control.node[1];
+        std::string ep_name = value.hostname;
+        int tag_id = value.port;
+        // LOG(INFO) << i << ": ep_name = " << ep_name;
+        LOG(INFO) << i << ": hostname = " << hostname;
+        LOG(INFO) << i << ": port = " << port;
+        LOG(INFO) << i << ": tag_id = " << tag_id;
+        std::lock_guard<std::mutex> lock(mu_);
+        endpoint_map_[std::make_pair(hostname, port)] = std::make_pair(ep_name, tag_id);
+        connected_nodes_.push_back(key);
+      }
+      CHECK_EQ(endpoint_map_.size(), num_instances);
+
+      Message req;
+      req.meta.request = false;
+      req.meta.control.cmd = Control::BOOTSTRAP;
+      req.meta.app_id = 0;
+      req.meta.customer_id = customer_id_;
+      req.meta.addr = 0;
+
+      // FIXME it's ok to maintain different IDs?
+      int fake_id = 0;
+      {
+        // key
+        Node key;
+        key.id = Meta::kEmpty;
+        // FIXME this is not accurate
+        key.role = Node::WORKER;
+        key.hostname = my_node_.hostname;
+        key.port = zmq_port;
+        // value
+        Node value;
+        // FIXME this is not accurate
+        value.role = Node::SCHEDULER;
+        std::string ep_name(ep_name_, ep_name_len_);
+        value.hostname = ep_name;
+        value.port = tag_;
+        req.meta.control.node.push_back(key);
+        req.meta.control.node.push_back(value);
+      }
+      for (auto k_v: endpoint_map_) {
+        // key
+        Node key;
+        key.id = fake_id++;
+        // TODO this is not accurate
+        key.role = Node::WORKER;
+        key.hostname = k_v.first.first;
+        key.port = k_v.first.second;
+        ZmqConnect(key);
+        // value
+        Node value;
+        value.role = Node::SCHEDULER;
+        value.hostname = k_v.second.first;
+        value.port = k_v.second.second;
+        req.meta.control.node.push_back(key);
+        req.meta.control.node.push_back(value);
+      }
+      CHECK_EQ(fake_id, num_instances);
+      // BROADCAST MAPPING TO ALL NODES
+      for (int i = 0; i < num_instances; i++) {
+        req.meta.recver = i;
+        int bytes = ZmqSendMsg(req);
+        LOG(INFO) << "Send " << bytes << " to node " << i;
+      }
+
+      while (true) {
+      ;
+      }
+
+    } else {
+      Node sched_node;
+      sched_node.id = kScheduler;
+      sched_node.port = atoi(CHECK_NOTNULL(Environment::Get()->find("DMLC_PS_ROOT_PORT")));
+      sched_node.hostname = std::string(CHECK_NOTNULL(Environment::Get()->find("DMLC_PS_ROOT_URI")));
+      sched_node.role = Node::SCHEDULER;
+      ZmqConnect(sched_node);
+
+      std::string ep_name(ep_name_, ep_name_len_);
+      std::string hostname(node.hostname);
+      // key
+      Node key;
+      key.role = node.role;
+      key.hostname = hostname;
+      key.port = zmq_port;
+      // value
+      Node value;
+      value.role = node.role;
+      value.hostname = ep_name;
+      value.port = tag_;
+
+      Message req;
+      req.meta.recver = kScheduler;
+      req.meta.request = false;
+      req.meta.control.cmd = Control::BOOTSTRAP;
+      req.meta.app_id = 0;
+      req.meta.customer_id = customer_id_;
+
+      req.meta.addr = 0;
+      req.meta.control.node.push_back(key);
+      req.meta.control.node.push_back(value);
+
+      int bytes = ZmqSendMsg(req);
+      LOG(INFO) << "Send " << bytes << " to the scheduler";
+
+      Message msg_recv;
+      bytes = ZmqRecvMsg(&msg_recv);
+      LOG(INFO) << "Received " << bytes << " bytes from the scheduler";
+
+      size_t kv_size = msg_recv.meta.control.node.size();
+      LOG(INFO) << "Got " << kv_size << " node info ";
+      CHECK_EQ(msg_recv.meta.control.node.size() % 2, 0) << "Invalid number of key value pairs";
+
+      for (int i = 0; i < msg_recv.meta.control.node.size() / 2; i++) {
+        Node recv_key = msg_recv.meta.control.node[2 * i];
+        std::string recv_hostname = key.hostname;
+        int recv_port = key.port;
+        Node recv_value = msg_recv.meta.control.node[2 * i + 1];
+        std::string recv_ep_name = value.hostname;
+        int recv_tag_id = value.port;
+
+        char readable_ep_name[DMLC_PS_MAX_EP_ADDR] = {};
+        size_t readable_ep_name_len = sizeof(readable_ep_name);
+        fi_av_straddr(ofi_component_->av, recv_ep_name.c_str(), readable_ep_name, &readable_ep_name_len);
+        LOG(INFO) << i << ": recv_readable_ep_name_len = " << readable_ep_name_len;
+        LOG(INFO) << i << ": recv_readable_ep_name = " << std::string(readable_ep_name, readable_ep_name + readable_ep_name_len);
+        if (recv_port == zmq_port && recv_hostname.compare(my_node_.hostname) == 0) {
+          CHECK(std::string(ep_name_, ep_name_len_).compare(recv_ep_name) == 0) << "Corrupted endpoint name detected";
+          LOG(INFO) << "endpoint name consistency check passed";
+        }
+        LOG(INFO) << i << ": recv_hostname = " << recv_hostname;
+        LOG(INFO) << i << ": recv_port = " << recv_port;
+        LOG(INFO) << i << ": recv_tag_id = " << recv_tag_id;
+        std::lock_guard<std::mutex> lock(mu_);
+        endpoint_map_[std::make_pair(recv_hostname, recv_port)] = std::make_pair(recv_ep_name, recv_tag_id);
+      }
+      while (true) {
+      ;
+      }
+      //LOG(INFO) << worker_node.DebugString();
+    }
+
+    // bootstrap
+    return zmq_port;
+  }
+
+  // scheduler binds
+  int ZmqBind(const Node& node, int max_retry) {
     receiver_ = zmq_socket(context_, ZMQ_ROUTER);
     int option = 1;
     CHECK(!zmq_setsockopt(receiver_, ZMQ_ROUTER_MANDATORY, &option, sizeof(option)))
@@ -453,14 +726,21 @@ struct OfiEndpoint {
       }
     }
     std::lock_guard<std::mutex> lk(mu_);
-    is_worker_ = (node.role == Node::WORKER ? true : false);
-    auto t = new std::thread(&FabricVan2::CallZmqRecvThread, this, (void*) receiver_);
+    auto t = new std::thread(&FabricVan2::ZmqSchedulerThread, this, (void*) receiver_);
     thread_list_.push_back(t);
-
+    LOG(INFO) << "ZMQ scheduler bound to port " << port;
     return port;
   }
 
   void Connect(const Node& node) override {
+    // use zmq to boostrap libfabric
+    CHECK_NE(node.id, node.kEmpty);
+    // connect to scheduler
+    // connect to worker / server
+  }
+
+  void ZmqConnect(const Node& node) {
+    // use zmq to boostrap libfabric
     CHECK_NE(node.id, node.kEmpty);
     CHECK_NE(node.port, node.kEmpty);
     CHECK(node.hostname.size());
@@ -485,7 +765,7 @@ struct OfiEndpoint {
       zmq_setsockopt(sender, ZMQ_IDENTITY, my_id.data(), my_id.size());
       std::lock_guard<std::mutex> lk(mu_);
       if (is_worker_ && (senders_.find(id)==senders_.end())) {
-        auto t = new std::thread(&FabricVan2::CallZmqRecvThread, this, (void*) sender);
+        auto t = new std::thread(&FabricVan2::ZmqNonSchedulerThread, this, (void*) sender);
         thread_list_.push_back(t);
       }
     }
@@ -500,10 +780,18 @@ struct OfiEndpoint {
     }
     std::lock_guard<std::mutex> lk(mu_);
     senders_[id] = sender;
+    if (my_node_.role != Node::SCHEDULER) {
+      CHECK_EQ(senders_.size(), 1) << "Unexpected number of senders";
+    }
+    LOG(INFO) << "ZMQ sender " << id << " connected to " + addr;
   }
 
   int SendMsg(Message& msg) override {
-    if (!is_worker_) return NonWorkerSendMsg(msg);
+    return 0;
+  }
+
+  int ZmqSendMsg(Message& msg) {
+    //if (!is_worker_) return NonWorkerSendMsg(msg);
 
     std::lock_guard<std::mutex> lk(mu_);
 
@@ -523,6 +811,10 @@ struct OfiEndpoint {
   }
 
   int RecvMsg(Message* msg) override {
+    return -1;
+  }
+
+  int ZmqRecvMsg(Message* msg) {
     msg->data.clear();
 
     ZmqBufferContext2 notification;
@@ -539,21 +831,21 @@ struct OfiEndpoint {
     UnpackMeta(meta_buf, meta_len, &(msg->meta));
     recv_bytes += meta_len;
 
-    for (size_t i = 0; i < notification.data_zmsg.size(); ++i) {
-      auto zmsg = notification.data_zmsg[i];
-      char* buf = CHECK_NOTNULL((char*)zmq_msg_data(zmsg));
-      size_t size = zmq_msg_size(zmsg);
-      recv_bytes += size;
+    //for (size_t i = 0; i < notification.data_zmsg.size(); ++i) {
+    //  auto zmsg = notification.data_zmsg[i];
+    //  char* buf = CHECK_NOTNULL((char*)zmq_msg_data(zmsg));
+    //  size_t size = zmq_msg_size(zmsg);
+    //  recv_bytes += size;
 
 
-      SArray<char> data;
-      // zero copy
-      data.reset(buf, size, [zmsg, size](void *) {
-        zmq_msg_close(zmsg);
-        delete zmsg;
-      });
-      msg->data.push_back(data);
-    }
+    //  SArray<char> data;
+    //  // zero copy
+    //  data.reset(buf, size, [zmsg, size](void *) {
+    //    zmq_msg_close(zmsg);
+    //    delete zmsg;
+    //  });
+    //  msg->data.push_back(data);
+    //}
 
     return recv_bytes;
   }
@@ -561,9 +853,7 @@ struct OfiEndpoint {
  private:
    void OfiGetProvider() {
      struct fi_info *hints = fi_allocinfo();
-     if (DMLC_PS_OFI_UNLIKELY(hints == nullptr)) {
-       LOG(FATAL) << "Unable to allocate fi_info";
-     }
+     CHECK(hints != nullptr) << "Unable to allocate fi_info";
     
      // Hints to filter providers
      // TODO remove FI_TAGGED?
@@ -658,7 +948,59 @@ struct OfiEndpoint {
     return ZmqSendMsg(socket, msg);
   }
 
-  void CallZmqRecvThread(void* socket) {
+  void ZmqSchedulerThread(void* socket) {
+    CHECK(socket);
+    LOG(INFO) << "Start ZMQ recv thread";
+
+    while (true) {
+      ZmqBufferContext2 *buf_ctx = new ZmqBufferContext2();
+
+      for (int i = 0;; ++i) {
+        zmq_msg_t* zmsg = new zmq_msg_t;
+        CHECK(zmq_msg_init(zmsg) == 0) << zmq_strerror(errno);
+        while (true) {
+          std::lock_guard<std::mutex> lk(mu_);
+          // the zmq_msg_recv should be non-blocking, otherwise deadlock will happen
+          int tag = ZMQ_DONTWAIT;
+          if (should_stop_ || zmq_msg_recv(zmsg, socket, tag) != -1) break;
+          if (errno == EINTR) {
+            std::cout << "interrupted";
+            continue;
+          } else if (errno == EAGAIN) { // ZMQ_DONTWAIT
+            continue;
+          }
+          CHECK(0) << "failed to receive message. errno: " << errno << " "
+                       << zmq_strerror(errno);
+        }
+        if (should_stop_) break;
+        char* buf = CHECK_NOTNULL((char*)zmq_msg_data(zmsg));
+        size_t size = zmq_msg_size(zmsg);
+
+        if (i == 0) {
+          // identify
+          buf_ctx->sender = GetNodeID(buf, size);
+          CHECK(zmq_msg_more(zmsg));
+          zmq_msg_close(zmsg);
+          delete zmsg;
+        }
+        else if (i == 1) {
+          // task
+          buf_ctx->meta_zmsg = zmsg;
+          bool more = zmq_msg_more(zmsg);
+          if (!more) break;
+        }
+        else {
+          buf_ctx->data_zmsg.push_back(zmsg);
+          bool more = zmq_msg_more(zmsg);
+          if (!more) break;
+        }
+      } // for
+      if (should_stop_) break;
+      recv_buffers_.Push(*buf_ctx);
+    } // while
+  }
+
+  void ZmqNonSchedulerThread(void* socket) {
     CHECK(socket);
     LOG(INFO) << "Start ZMQ recv thread";
 
@@ -727,25 +1069,24 @@ struct OfiEndpoint {
     }
     zmq_msg_close(&meta_msg);
     int send_bytes = meta_size;
-
     // send data
-    for (int i = 0; i < n; ++i) {
-      zmq_msg_t data_msg;
-      SArray<char>* data = new SArray<char>(msg.data[i]);
-      int data_size = data->size();
-      zmq_msg_init_data(&data_msg, data->data(), data->size(), FreeData2, data);
-      if (i == n - 1) tag = ZMQ_DONTWAIT;
-      while (true) {
-        if (zmq_msg_send(&data_msg, socket, tag) == data_size) break;
-        if (errno == EINTR) continue;
-        LOG(WARNING) << "failed to send message, errno: "
-                     << errno << " " << zmq_strerror(errno)
-                     << ". " << i << "/" << n;
-        return -1;
-      }
-      zmq_msg_close(&data_msg);
-      send_bytes += data_size;
-    }
+    //for (int i = 0; i < n; ++i) {
+    //  zmq_msg_t data_msg;
+    //  SArray<char>* data = new SArray<char>(msg.data[i]);
+    //  int data_size = data->size();
+    //  zmq_msg_init_data(&data_msg, data->data(), data->size(), FreeData2, data);
+    //  if (i == n - 1) tag = ZMQ_DONTWAIT;
+    //  while (true) {
+    //    if (zmq_msg_send(&data_msg, socket, tag) == data_size) break;
+    //    if (errno == EINTR) continue;
+    //    LOG(WARNING) << "failed to send message, errno: "
+    //                 << errno << " " << zmq_strerror(errno)
+    //                 << ". " << i << "/" << n;
+    //    return -1;
+    //  }
+    //  zmq_msg_close(&data_msg);
+    //  send_bytes += data_size;
+    //}
     return send_bytes;
   }
 
@@ -797,8 +1138,25 @@ struct OfiEndpoint {
   // Indicates if memory registration of local buffers is required
   bool local_mr_ = false;
   // NCCL OFI component array for all NICs
-  OfiEndpoint *ofi_component_ = nullptr;
-
+  OfiEndpoint* ofi_component_ = nullptr;
+  // name of the endpoint
+  char ep_name_[DMLC_PS_MAX_EP_ADDR] = {};
+  // length of the name
+  size_t ep_name_len_ = sizeof(ep_name_);
+  //  endpoint tag
+  uint64_t tag_;
+  // listen comm
+  ListenComm* listen_comm_ = nullptr;
+  // send_comms_ /**
+  // * \brief node_id to the socket for sending data to this node
+  // */
+  //std::unordered_map<int, void*> senders_;
+  //std::unique_ptr<Van> zmq_van_;
+  //ZMQVan* zmq_van_ = new std::unique_ptr<ZMQVan>;
+  int customer_id_;
+  // hostname to (endpoint, tag)
+  std::unordered_map<std::pair<std::string, int>, std::pair<std::string, uint64_t>, pair_hash> endpoint_map_;
+  std::vector<Node> connected_nodes_;
 };
 }  // namespace ps
 
