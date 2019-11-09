@@ -17,7 +17,7 @@
 #include "./meta.pb.h"
 #include "./network_utils.h"
 #include "./rdma_van.h"
-#include "./libfabric_van.h"
+//#include "./libfabric_van.h"
 #include "./zmq_conn_van.h"
 #include "./resender.h"
 #include "./zmq_van.h"
@@ -80,7 +80,7 @@ Van *Van::Create(const std::string &type) {
 #endif
 #ifdef DMLC_USE_FABRIC
   } else if (type == "fabric") {
-    return new FabricVan();
+    return new FabricVan2();
   } else if (type == "fabric2") {
     return new FabricVan2();
 #endif
@@ -367,6 +367,7 @@ void Van::Start(int customer_id) {
 
     // connect to the scheduler
     Connect(scheduler_);
+    while (true) ;
 
     // for debug use
     if (Environment::Get()->find("PS_DROP_MSG")) {
@@ -389,6 +390,7 @@ void Van::Start(int customer_id) {
     msg.meta.timestamp = timestamp_++;
     Send(msg);
   }
+  while (true) ;
 
   // wait until ready
   while (!ready_.load()) {
@@ -488,13 +490,16 @@ void Van::Receiving() {
         ProcessTerminateCommand();
         break;
       } else if (ctrl.cmd == Control::ADD_NODE) {
+        LOG(INFO) << "Process ADD_NODE";
         ProcessAddNodeCommand(&msg, &nodes, &recovery_nodes);
       } else if (ctrl.cmd == Control::BARRIER) {
+        LOG(INFO) << "Process BARRIER";
         ProcessBarrierCommand(&msg);
       } else if (ctrl.cmd == Control::HEARTBEAT) {
+        LOG(INFO) << "Process HEARTBEAT";
         ProcessHearbeat(&msg);
       } else {
-        LOG(WARNING) << "Drop unknown typed message " << msg.DebugString();
+        LOG(INFO) << "Drop unknown typed message " << msg.DebugString();
       }
     } else {
       ProcessDataMsg(&msg);
