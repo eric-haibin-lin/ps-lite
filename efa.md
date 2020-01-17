@@ -1,4 +1,9 @@
+
+
 ## Build with EFA
+
+AMI: bert-hvd-efa-al2 in us-west-2
+
 ```
 make clean; USE_FABRIC=1 make -j;
 ```
