@@ -367,6 +367,7 @@ void Van::Start(int customer_id) {
 
     // connect to the scheduler
     Connect(scheduler_);
+    LOG(INFO) << "ABOUT TO SPIN";
     while (true) ;
 
     // for debug use
@@ -390,6 +391,7 @@ void Van::Start(int customer_id) {
     msg.meta.timestamp = timestamp_++;
     Send(msg);
   }
+  LOG(INFO) << "ABOUT TO SPIN";
   while (true) ;
 
   // wait until ready

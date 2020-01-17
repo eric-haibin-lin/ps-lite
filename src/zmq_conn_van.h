@@ -952,7 +952,7 @@ class FabricVan2 : public Van {
 
     /* Send "connect" message to remote EP */
     mu_.lock();
-    void *ep_name = &ep_name_
+    void *ep_name = &ep_name_;
     uint64_t ep_name_len = ep_name_len_;
     mu_.unlock();
     do {
@@ -1047,8 +1047,8 @@ class FabricVan2 : public Van {
     } else {
       BootstrapNonScheduler(node, my_port);
     }
-    auto t = new std::thread(&FabricVan2::OfiAcceptThread, this);
-    thread_list_.push_back(t);
+    //auto t = new std::thread(&FabricVan2::OfiAcceptThread, this);
+    //thread_list_.push_back(t);
     return my_port;
   }
 
@@ -1319,124 +1319,123 @@ class FabricVan2 : public Van {
 
   }
 
-  int OfiAcceptThread() {
+  //int OfiAcceptThread() {
+  //  for (uint64_t i = 1; i <= num_connections_; i++) {
+  //    uint64_t tag = (my_tag_ + i) % num_connections_;
+  //    int ret = 0; // ncclSuccess;
+  //    ssize_t rc = 0;
+  //    recvComm_t *rComm = NULL;
+  //    listenComm_t *lComm = (listenComm_t *)listenComm;
+  //    int dev = lComm->dev;
+  //    nccl_ofi_t *nccl_ofi_comp = nccl_ofi_component[dev];
+  //    nccl_ofi_req_t *req = NULL;
+  //    char remote_ep_addr[MAX_EP_ADDR] = {0};
+  //    fi_addr_t remote_ep;
+  //    uint64_t max_tag = nccl_ofi_comp->max_tag;
+  //    size_t req_size = sizeof(nccl_ofi_req_t);
 
-    for (uint64_t i = 1; i <= num_connections_; i++) {
-      uint64_t tag = (my_tag_ + i) % num_connections_;
-      int ret = 0; // ncclSuccess;
-      ssize_t rc = 0;
-      recvComm_t *rComm = NULL;
-      listenComm_t *lComm = (listenComm_t *)listenComm;
-      int dev = lComm->dev;
-      nccl_ofi_t *nccl_ofi_comp = nccl_ofi_component[dev];
-      nccl_ofi_req_t *req = NULL;
-      char remote_ep_addr[MAX_EP_ADDR] = {0};
-      fi_addr_t remote_ep;
-      uint64_t max_tag = nccl_ofi_comp->max_tag;
-      size_t req_size = sizeof(nccl_ofi_req_t);
 
-
-    
-      if (nccl_ofi_comp == NULL) {
-        ret = ncclSystemError;
-        NCCL_OFI_WARN("NCCL OFI component for dev %d is uninitialised",
-               dev);
-        goto exit;
-      }
-    
-      if (lComm->accepted == true) {
-        ret = ncclSystemError;
-        NCCL_OFI_WARN("listenComm object already has an active connection.");
-        goto exit;
-      }
-    
-      /* Allocate a NCCL OFI request */
-      req = (nccl_ofi_req_t *)calloc(1, sizeof(nccl_ofi_req_t));
-      if (OFI_UNLIKELY(req == NULL)) {
-        NCCL_OFI_WARN("Unable to allocate nccl_ofi_req_t");
-        ret = ncclSystemError;
-        goto exit;
-      }
-      req->state = kRequestCreated;
-    
-      if (OFI_UNLIKELY(ret != 0))
-        goto exit;
-    
-      req->lComm = lComm;
-      req->dev = dev;
-    
-      /* Post a buffer for receiving connection requests */
-      do {
-        rc = fi_trecv(lComm->local_ep, (void *)&remote_ep_addr, MAX_EP_ADDR,
-                NULL, FI_ADDR_UNSPEC, lComm->tag | ~max_tag,
-                0, &req->ctx);
-        if (rc == 0)
-          break;
-        else if (rc == -FI_EAGAIN) {
-          /*
-     *        * Process completions so that you have enough
-     *               * resources for posting receive buffer
-     *                      */
-          ret = nccl_ofi_progress(nccl_ofi_comp);
-          if (OFI_UNLIKELY(ret != 0))
-            goto exit;
-        }
-        else {
-          NCCL_OFI_WARN("Unable to post a buffer for receving connections for dev %d. RC: %zd, ERROR: %s",
-                 dev, rc, fi_strerror(-rc));
-          ret = ncclSystemError;
-          goto exit;
-        }
-      } while (true);
-    
-      /* Progress NCCL_OFI until connection is accepted */
-      while (lComm->accepted == false) {
-        ret = nccl_ofi_progress(nccl_ofi_comp);
-        if (OFI_UNLIKELY(ret != 0))
-          goto exit;
-      }
-    
-      /* Insert remote EP address to AV */
-      ret = fi_av_insert(nccl_ofi_comp->av, (void *)remote_ep_addr, 1,
-             &remote_ep, 0, NULL);
-      if (OFI_UNLIKELY(ret != 1)) {
-        NCCL_OFI_WARN("Unable to insert remote address into address vector for device %d. RC: %d",
-                dev, fi_strerror(-ret));
-        ret = ncclSystemError;
-        goto exit;
-      }
-    
-      /* Build recvComm */
-      rComm = (recvComm_t *)calloc(1, sizeof(recvComm_t));
-      if (rComm == NULL) {
-        NCCL_OFI_WARN("Unable to allocate receive Comm object for device %d",
-               dev);
-        ret = ncclSystemError;
-        goto exit;
-      }
-    
-      rComm->tag = lComm->tag;
-      rComm->local_ep = lComm->local_ep;
-      rComm->remote_ep = remote_ep;
-      rComm->dev = dev;
-    
-      /* Pre-allocated buffers for data path */
-      ret = allocate_ofi_fl(&rComm->reqs_fl, NCCL_OFI_MAX_REQUESTS,
-                req_size);
-      if (OFI_UNLIKELY(ret != 0)) {
-        NCCL_OFI_WARN("Could not allocate NCCL OFI requests free list for dev %d",
-               dev);
-        goto exit;
-      }
-    
-      *recvComm = rComm;
-    
-    exit:
-      if (req)
-        free(req);
-      return ret;
-    }
-  }
+  //  
+  //    if (nccl_ofi_comp == NULL) {
+  //      ret = ncclSystemError;
+  //      NCCL_OFI_WARN("NCCL OFI component for dev %d is uninitialised",
+  //             dev);
+  //      goto exit;
+  //    }
+  //  
+  //    if (lComm->accepted == true) {
+  //      ret = ncclSystemError;
+  //      NCCL_OFI_WARN("listenComm object already has an active connection.");
+  //      goto exit;
+  //    }
+  //  
+  //    /* Allocate a NCCL OFI request */
+  //    req = (nccl_ofi_req_t *)calloc(1, sizeof(nccl_ofi_req_t));
+  //    if (OFI_UNLIKELY(req == NULL)) {
+  //      NCCL_OFI_WARN("Unable to allocate nccl_ofi_req_t");
+  //      ret = ncclSystemError;
+  //      goto exit;
+  //    }
+  //    req->state = kRequestCreated;
+  //  
+  //    if (OFI_UNLIKELY(ret != 0))
+  //      goto exit;
+  //  
+  //    req->lComm = lComm;
+  //    req->dev = dev;
+  //  
+  //    /* Post a buffer for receiving connection requests */
+  //    do {
+  //      rc = fi_trecv(lComm->local_ep, (void *)&remote_ep_addr, MAX_EP_ADDR,
+  //              NULL, FI_ADDR_UNSPEC, lComm->tag | ~max_tag,
+  //              0, &req->ctx);
+  //      if (rc == 0)
+  //        break;
+  //      else if (rc == -FI_EAGAIN) {
+  //        /*
+  //   *        * Process completions so that you have enough
+  //   *               * resources for posting receive buffer
+  //   *                      */
+  //        ret = nccl_ofi_progress(nccl_ofi_comp);
+  //        if (OFI_UNLIKELY(ret != 0))
+  //          goto exit;
+  //      }
+  //      else {
+  //        NCCL_OFI_WARN("Unable to post a buffer for receving connections for dev %d. RC: %zd, ERROR: %s",
+  //               dev, rc, fi_strerror(-rc));
+  //        ret = ncclSystemError;
+  //        goto exit;
+  //      }
+  //    } while (true);
+  //  
+  //    /* Progress NCCL_OFI until connection is accepted */
+  //    while (lComm->accepted == false) {
+  //      ret = nccl_ofi_progress(nccl_ofi_comp);
+  //      if (OFI_UNLIKELY(ret != 0))
+  //        goto exit;
+  //    }
+  //  
+  //    /* Insert remote EP address to AV */
+  //    ret = fi_av_insert(nccl_ofi_comp->av, (void *)remote_ep_addr, 1,
+  //           &remote_ep, 0, NULL);
+  //    if (OFI_UNLIKELY(ret != 1)) {
+  //      NCCL_OFI_WARN("Unable to insert remote address into address vector for device %d. RC: %d",
+  //              dev, fi_strerror(-ret));
+  //      ret = ncclSystemError;
+  //      goto exit;
+  //    }
+  //  
+  //    /* Build recvComm */
+  //    rComm = (recvComm_t *)calloc(1, sizeof(recvComm_t));
+  //    if (rComm == NULL) {
+  //      NCCL_OFI_WARN("Unable to allocate receive Comm object for device %d",
+  //             dev);
+  //      ret = ncclSystemError;
+  //      goto exit;
+  //    }
+  //  
+  //    rComm->tag = lComm->tag;
+  //    rComm->local_ep = lComm->local_ep;
+  //    rComm->remote_ep = remote_ep;
+  //    rComm->dev = dev;
+  //  
+  //    /* Pre-allocated buffers for data path */
+  //    ret = allocate_ofi_fl(&rComm->reqs_fl, NCCL_OFI_MAX_REQUESTS,
+  //              req_size);
+  //    if (OFI_UNLIKELY(ret != 0)) {
+  //      NCCL_OFI_WARN("Could not allocate NCCL OFI requests free list for dev %d",
+  //             dev);
+  //      goto exit;
+  //    }
+  //  
+  //    *recvComm = rComm;
+  //  
+  //  exit:
+  //    if (req)
+  //      free(req);
+  //    return ret;
+  //  }
+  //}
 
 
   int ZmqSendMsg(Message& msg) {
