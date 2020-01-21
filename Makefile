@@ -28,7 +28,10 @@ CFLAGS += -DDMLC_USE_RDMA
 endif
 
 ifeq ($(USE_FABRIC), 1)
-LIBS += -lrdmacm -lfabric -L/opt/amazon/efa/lib64
+# Uncomment for Amazon Linux or RHEL
+#LIBS += -lrdmacm -lfabric -L/opt/amazon/efa/lib64
+# Uncomment for Ubuntu
+LIBS += -lrdmacm -lfabric -L/opt/amazon/efa/lib
 CFLAGS += -DDMLC_USE_FABRIC
 INCPATH += -I/opt/amazon/efa/include
 endif
