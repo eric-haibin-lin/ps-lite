@@ -1,500 +1,56 @@
-/**
- *  Copyright (c) 2018-2019 Bytedance Inc.
- *  Author: lanchang@bytedance.com (Chang Lan)
- *          jiangyimin@bytedance.com (Yimin Jiang)
- *          chenjingrong@bytedance.com (Jingrong Chen)
- */
-#ifndef PS_IBVERBS_VAN_H_
-#define PS_IBVERBS_VAN_H_
+// Copyright 2019 Bytedance Inc. or its affiliates. All Rights Reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+// =============================================================================
 
-#ifdef DMLC_USE_IBVERBS
+#ifndef PS_RDMA_VAN_H_
+#define PS_RDMA_VAN_H_
 
-#include <errno.h>
-#include <fcntl.h>
-#include <netdb.h>
-#include <poll.h>
-#include <stddef.h>
-#include <stdio.h>
-#include <stdlib.h>
+#ifdef DMLC_USE_RDMA
 
-#include <rdma/rdma_cma.h>
-
-#include <algorithm>
-#include <map>
-#include <queue>
-#include <memory>
-#include <set>
-#include <string>
-#include <thread>
-#include <tuple>
-#include <unordered_map>
-#include <unordered_set>
-#include <utility>
-#include <vector>
-
-#include "ps/internal/threadsafe_queue.h"
-#include "ps/internal/van.h"
+#include "rdma_utils.h"
+#include "rdma_transport.h"
 
 namespace ps {
 
-// Number of context buffers for sending START messages
-static const int kStartDepth = 128;
-
-// Number of context buffers for writing messages
-static const int kWriteDepth = kStartDepth;
-
-// Number of context buffers for receiving messages
-static const int kRxDepth = kStartDepth * 2;
-
-// Number of context buffers for sending REPLY messages
-static const int kReplyDepth = kRxDepth;
-
-// Maximum number of scatter/gather elements in any Work Request
-static const int kSGEntry = 4;
-
-// Time to wait for resolution to complete (in milliseconds)
-static const int kTimeoutms = 1000;
-
-// Number of backlog of incoming connection requests
-static const int kRdmaListenBacklog = 128;
-
-// Number of preallocated work request buffers
-static const int kMaxConcurrentWorkRequest =
-    kRxDepth + kStartDepth + kReplyDepth + kWriteDepth;
-
-// Length of buffers for storing hostname in the context of a connection request
-static const int kMaxHostnameLength = 16;
-
-// Maximum number of ``data'' in a Message
-// TODO(changlan): What if there are more data in Message?
-static const int kMaxDataFields = 4;
-
-// Alignment in Mempool
-static const size_t kAlignment = 8;
-
-template <typename T>
-static inline T align_floor(T v, T align) {
-  return v - (v % align);
-}
-
-template <typename T>
-static inline T align_ceil(T v, T align) {
-  return align_floor(v + align - 1, align);
-}
-
-// A simple thread-safe memory pool for RDMA memory regions
-class SimpleMempool {
+class RDMAVan : public Van {
  public:
-  // Allocated an initial ``size'' of registered memory regions
-  explicit SimpleMempool(struct ibv_pd *pd, size_t size = 0x1000000) {
-    pd_ = pd;
-    struct ibv_mr *mr;
-    char *p = reinterpret_cast<char *>(aligned_alloc(kAlignment, size));
-    total_allocated_size += size;
-    CHECK(p);
-    CHECK(mr = ibv_reg_mr(pd, p, size,
-                          IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE));
-    // this mr is associated with memory address range [p, p+size]
-    mr_list.emplace(p + size, mr);
-    free_list.emplace(size, p);
+  RDMAVan() {
+    CHECK_EQ(ibv_fork_init(), 0) << strerror(errno);
   }
+  ~RDMAVan() {}
 
-  // Deregister and release all memory regions
-  ~SimpleMempool() {
-    std::lock_guard<std::mutex> lk(mu_);
-    for (auto it = mr_list.begin(); it != mr_list.end(); it++) {
-      CHECK_EQ(ibv_dereg_mr(it->second), 0);
-      free(it->second->addr);
-    }
-  }
-
-  // Take a buffer of ``size'' from the pool. If there is not enough remaining
-  // space in existing memory regions, allocate and register a new memory
-  // region.
-  char *Alloc(size_t size) {
-    if (size == 0) {
-      return nullptr;
-    }
-
-    std::lock_guard<std::mutex> lk(mu_);
-
-    // Make sure the memory addresses are aligned by rounding the size up to
-    // next power of two
-    size_t proper_size = align_ceil(size, kAlignment);
-
-    // Find a buffer of size greater than or equal to proper_size
-    auto it = free_list.lower_bound(proper_size);
-
-    if (it == free_list.end()) {  // if there is no space left, need to allocate
-                                  // and register new memory
-      size_t new_mem_size = total_allocated_size;
-      while (proper_size > new_mem_size) {
-        new_mem_size *= 2;
-      }
-      char *p =
-          reinterpret_cast<char *>(aligned_alloc(kAlignment, new_mem_size));
-      CHECK(p);
-      struct ibv_mr *mr;
-      CHECK(mr = ibv_reg_mr(pd_, p, new_mem_size,
-                            IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE));
-      mr_list.emplace(p + new_mem_size, mr);
-      free_list.emplace(new_mem_size, p);
-      it = free_list.lower_bound(proper_size);
-      PS_VLOG(1) << "Not enough memory in the pool, requested size "
-                 << proper_size << ", new allocated size " << new_mem_size;
-      total_allocated_size += new_mem_size;
-    }
-
-    CHECK_NE(free_list.end(), it) << "Not enough memory";
-    CHECK_GE(it->first, proper_size);
-
-    char *addr = it->second;
-    size_t space_left = it->first - proper_size;
-
-    free_list.erase(it);
-    CHECK_EQ(used_list.find(addr), used_list.end())
-        << "Address is already allocated";
-
-    used_list.emplace(addr, proper_size);
-
-    if (space_left) {
-      free_list.emplace(space_left, addr + proper_size);
-    }
-
-    return addr;
-  }
-
-  // Return the buffer pointed by ``addr'' into the pool
-  void Free(char *addr) {
-    if (!addr) {
-      return;
-    }
-
-    std::lock_guard<std::mutex> lk(mu_);
-
-    auto it = used_list.find(addr);
-    CHECK_NE(used_list.end(), it)
-        << "Cannot find info about address: " << (uintptr_t)addr;
-
-    size_t size = it->second;
-    used_list.erase(it);
-    free_list.emplace(size, addr);
-  }
-
-  uint32_t LocalKey(char *addr) {
-    struct ibv_mr *mr = Addr2MR(addr);
-    return mr->lkey;
-  }
-
-  uint32_t RemoteKey(char *addr) {
-    struct ibv_mr *mr = Addr2MR(addr);
-    return mr->rkey;
-  }
-
- private:
-  std::mutex mu_;  // for thread safety
-  struct ibv_pd *pd_;
-
-  // buffer size -> buffer pointer
-  std::multimap<size_t, char *> free_list;
-  // buffer pointer -> buffer size
-  std::unordered_map<char *, size_t> used_list;
-  // first: `end` of this mr address (e.g., for mr with [addr, addr+size), point
-  // to `addr+size`)
-  std::map<char *, struct ibv_mr *> mr_list;
-
-  size_t total_allocated_size = 0;
-
-  // Convert the memory address to its associated RDMA memory region
-  inline struct ibv_mr *Addr2MR(char *addr) {
-    auto it = mr_list.lower_bound(addr);
-    CHECK_NE(it, mr_list.end()) << "cannot find the associated memory region";
-    return it->second;
-  }
-};
-
-class Block {
- public:
-  explicit Block(SimpleMempool *pool, char *addr, int count)
-      : pool(pool), addr(addr), counter(count) {}
-
-  ~Block() {
-    CHECK_EQ(counter, 0);
-    pool->Free(addr);
-  }
-
-  void Release() {
-    int v = counter.fetch_sub(1);
-    if (v == 1) {
-      delete this;
-    }
-  }
-
- private:
-  SimpleMempool *pool;
-  char *addr;
-  std::atomic<int> counter;
-};
-
-enum MessageTypes : uint32_t {
-  kRendezvousStart,
-  kRendezvousReply,
-};
-
-struct RendezvousStart {
-  uint64_t meta_len;
-  uint64_t data_num;
-  uint64_t data_len[kMaxDataFields];
-  uint64_t origin_addr;
-};
-
-struct RendezvousReply {
-  uint64_t addr;
-  uint64_t origin_addr;
-  uint32_t rkey;
-  uint32_t idx;
-};
-
-enum WRContextType {
-  kRendezvousStartContext,
-  kRendezvousReplyContext,
-  kWriteContext,
-  kReceiveContext
-};
-
-struct WRContext {
-  WRContextType type;
-  struct ibv_mr *buffer;
-  void *private_data;
-};
-
-struct BufferContext {
-  char *buffer;
-  size_t meta_len;
-  size_t data_num;
-  size_t data_len[kMaxDataFields];
-};
-
-struct LocalBufferContext {
-  size_t meta_len;
-  char *meta_buf;
-  std::vector<SArray<char>> data;
-};
-
-struct MessageBuffer {
-  size_t inline_len;
-  char *inline_buf;
-  WRContext *reserved_context;
-  std::vector<SArray<char>> data;
-  std::vector<std::pair<struct ibv_mr *, size_t>> mrs;
-};
-
-struct RequestContext {
-  uint32_t node;
-  uint16_t port;
-  char hostname[kMaxHostnameLength];
-};
-
-static_assert(std::is_pod<RendezvousStart>::value,
-              "RendezvousStart must be a POD type.");
-static_assert(std::is_pod<RendezvousReply>::value,
-              "RendezvousReply must be a POD type.");
-static_assert(std::is_pod<RequestContext>::value,
-              "RequestContext must be a POD type.");
-
-static const size_t kMempoolChunkSize =
-    std::max(sizeof(RendezvousStart), sizeof(RendezvousReply));
-
-template <typename T>
-class AddressPool {
- public:
-  AddressPool() {
-    std::lock_guard<std::mutex> lk(mu_);
-    for (int i = 0; i < kMaxEntries; i++) {
-      indices_.push(i);
-      table_[i] = nullptr;
-    }
-  }
-
-  T *GetAddressAndRelease(uint32_t index) {
-    std::lock_guard<std::mutex> lk(mu_);
-    T *ptr = table_[index];
-    CHECK(ptr);
-    indices_.push(index);
-    table_[index] = nullptr;
-    return ptr;
-  }
-
-  uint32_t StoreAddress(T *ptr) {
-    std::lock_guard<std::mutex> lk(mu_);
-    CHECK(ptr);
-    uint32_t idx = indices_.front();
-    indices_.pop();
-    CHECK_EQ(table_[idx], nullptr);
-    table_[idx] = ptr;
-    return idx;
-  }
-
- private:
-  static const int kMaxEntries = 512;
-
-  std::mutex mu_;
-  std::queue<uint32_t> indices_;
-  T *table_[kMaxEntries];
-};
-
-struct Endpoint {
-  enum ConnectionStatus { IDLE, CONNECTING, CONNECTED, REJECTED };
-
-  ConnectionStatus status;
-  int node_id;
-  std::condition_variable cv;
-  std::mutex connect_mu;
-  struct rdma_cm_id *cm_id;
-
-  WRContext rx_ctx[kRxDepth];
-
-  WRContext start_ctx[kStartDepth];
-  WRContext reply_ctx[kReplyDepth];
-  WRContext write_ctx[kWriteDepth];
-
-  ThreadsafeQueue<WRContext *> free_start_ctx;
-  ThreadsafeQueue<WRContext *> free_reply_ctx;
-  ThreadsafeQueue<WRContext *> free_write_ctx;
-
-  Endpoint() : status(IDLE), node_id(Node::kEmpty), cm_id(nullptr), rx_ctx() {}
-
-  ~Endpoint() {
-    for (int i = 0; i < kRxDepth; ++i) {
-      if (!(rx_ctx[i].buffer)) {
-        continue;
-      }
-      free(rx_ctx[i].buffer->addr);
-      CHECK_EQ(ibv_dereg_mr(rx_ctx[i].buffer), 0);
-    }
-
-    for (int i = 0; i < kStartDepth; ++i) {
-      if (start_ctx[i].buffer) {
-        free(start_ctx[i].buffer->addr);
-        CHECK_EQ(ibv_dereg_mr(start_ctx[i].buffer), 0);
-      }
-    }
-
-    for (int i = 0; i < kReplyDepth; ++i) {
-      if (reply_ctx[i].buffer) {
-        free(reply_ctx[i].buffer->addr);
-        CHECK_EQ(ibv_dereg_mr(reply_ctx[i].buffer), 0);
-      }
-    }
-
-    for (int i = 0; i < kWriteDepth; ++i) {
-      if (write_ctx[i].buffer) {
-        free(write_ctx[i].buffer->addr);
-        CHECK_EQ(ibv_dereg_mr(write_ctx[i].buffer), 0);
-      }
-    }
-
-    rdma_destroy_qp(cm_id);
-    CHECK_EQ(rdma_destroy_id(cm_id), 0) << strerror(errno);
-  }
-
-  void Disconnect() {
-    std::unique_lock<std::mutex> lk(connect_mu);
-    CHECK_EQ(rdma_disconnect(cm_id), 0) << strerror(errno);
-    cv.wait(lk, [this] { return status == IDLE; });
-  }
-
-  void SetNodeID(int id) { node_id = id; }
-
-  void InitSendContextHelper(struct ibv_pd *pd, WRContext *ctx,
-                             ThreadsafeQueue<WRContext *> *queue, size_t num,
-                             WRContextType type) {
-    for (size_t i = 0; i < num; ++i) {
-      void *buf = aligned_alloc(kAlignment, kMempoolChunkSize);
-      CHECK(buf);
-      struct ibv_mr *mr = ibv_reg_mr(pd, buf, kMempoolChunkSize, 0);
-      CHECK(mr);
-
-      ctx[i].type = type;
-      ctx[i].buffer = mr;
-      ctx[i].private_data = this;
-      queue->Push(&ctx[i]);
-    }
-  }
-
-  void Init(struct ibv_cq *cq, struct ibv_pd *pd) {
-    struct ibv_qp_init_attr attr;
-    memset(&attr, 0, sizeof(ibv_qp_init_attr));
-    attr.send_cq = cq;
-    attr.recv_cq = cq;
-    attr.cap.max_send_wr = kStartDepth + kReplyDepth + kWriteDepth;
-    attr.cap.max_recv_wr = kRxDepth;
-    attr.cap.max_send_sge = kSGEntry;
-    attr.cap.max_recv_sge = kSGEntry;
-    attr.qp_type = IBV_QPT_RC;
-    attr.sq_sig_all = 0;
-
-    CHECK_EQ(rdma_create_qp(cm_id, pd, &attr), 0)
-        << "Create RDMA queue pair failed";
-
-    InitSendContextHelper(pd, start_ctx, &free_start_ctx, kStartDepth,
-                          kRendezvousStartContext);
-    InitSendContextHelper(pd, reply_ctx, &free_reply_ctx, kReplyDepth,
-                          kRendezvousReplyContext);
-    InitSendContextHelper(pd, write_ctx, &free_write_ctx, kWriteDepth,
-                          kWriteContext);
-
-    for (size_t i = 0; i < kRxDepth; ++i) {
-      void *buf = aligned_alloc(kAlignment, kMempoolChunkSize);
-      CHECK(buf);
-      struct ibv_mr *mr =
-          ibv_reg_mr(pd, buf, kMempoolChunkSize, IBV_ACCESS_LOCAL_WRITE);
-      CHECK(mr);
-
-      rx_ctx[i].type = kReceiveContext;
-      rx_ctx[i].buffer = mr;
-      rx_ctx[i].private_data = this;
-
-      PostRecv(&rx_ctx[i]);
-    }
-  }
-
-  void PostRecv(WRContext *ctx) {
-    struct ibv_recv_wr wr, *bad_wr = nullptr;
-    memset(&wr, 0, sizeof(wr));
-
-    struct ibv_sge sge;
-    sge.addr = reinterpret_cast<uint64_t>(ctx->buffer->addr);
-    sge.length = kMempoolChunkSize;
-    sge.lkey = ctx->buffer->lkey;
-
-    wr.wr_id = reinterpret_cast<uint64_t>(ctx);
-    wr.next = nullptr;
-    wr.sg_list = &sge;
-    wr.num_sge = 1;
-
-    CHECK_EQ(ibv_post_recv(cm_id->qp, &wr, &bad_wr), 0)
-        << "ibv_post_recv failed.";
-  }
-};
-
-class IBVerbsVan : public Van {
- public:
-  IBVerbsVan() {}
-  ~IBVerbsVan() {}
-
- protected:
+ protected:  
   void Start(int customer_id) override {
     start_mu_.lock();
     should_stop_ = false;
+
+    auto val = Environment::Get()->find("BYTEPS_ENABLE_IPC");
+    disable_ipc_ = val ? !atoi(val) : true;
+    if (disable_ipc_) LOG(INFO) << "Shared memory IPC has been disabled";
 
     if (event_channel_ == nullptr) {
       event_channel_ = rdma_create_event_channel();
       CHECK(event_channel_) << "Create RDMA event channel failed";
 
       cm_event_polling_thread_.reset(
-          new std::thread(&IBVerbsVan::PollEvents, this));
+          new std::thread(&RDMAVan::PollEvents, this));
     }
+
+    // enable logging
+    val = Environment::Get()->find("BYTEPS_PRINT_RDMA_LOG");
+    enable_log_ = val ? atoi(val) : false;
+    if (enable_log_) LOG(INFO) << "Enable RDMA logging.";
 
     start_mu_.unlock();
     Van::Start(customer_id);
@@ -515,12 +71,8 @@ class IBVerbsVan : public Van {
     cm_event_polling_thread_->join();
     cm_event_polling_thread_.reset();
 
-    PS_VLOG(1) << "Clearing mempool.";
-    mempool_.reset();
-
-    for (auto &it : allocated_mr_) {
-      ibv_dereg_mr(it.second);
-    }
+    PS_VLOG(1) << "Clearing memory allocator.";
+    mem_allocator_.reset();
 
     PS_VLOG(1) << "Clearing endpoints.";
     incoming_.clear();
@@ -531,7 +83,11 @@ class IBVerbsVan : public Van {
     CHECK(!ibv_destroy_comp_channel(comp_event_channel_))
         << "Failed to destroy channel";
 
-    // TODO(changlan): ibv_dealloc_pd sometimes complains about busy resources
+    for (auto& it : mem_mr_) ibv_dereg_mr(it.second);
+
+    // TODO: ibv_dealloc_pd sometimes complains resource busy, need to fix this
+    // CHECK(!ibv_dealloc_pd(pd_)) << "Failed to deallocate PD: " <<
+    // strerror(errno);
 
     PS_VLOG(1) << "Destroying listener.";
     rdma_destroy_id(listener_);
@@ -541,9 +97,16 @@ class IBVerbsVan : public Van {
   int Bind(const Node &node, int max_retry) override {
     CHECK(rdma_create_id(event_channel_, &listener_, nullptr, RDMA_PS_TCP) == 0)
         << "Create RDMA connection identifier failed";
-
+    
     struct sockaddr_in addr;
-    memset(&addr, 0, sizeof(addr));
+    memset(&addr, 0, sizeof(addr));    
+
+    auto val = Environment::Get()->find("DMLC_NODE_HOST");
+    if (val) {
+      PS_VLOG(1) << "bind to DMLC_NODE_HOST: " << std::string(val);
+      addr.sin_addr.s_addr = inet_addr(val);
+    } 
+    
     addr.sin_family = AF_INET;
     int port = node.port;
     unsigned seed = static_cast<unsigned>(time(NULL) + port);
@@ -565,7 +128,7 @@ class IBVerbsVan : public Van {
   }
 
   void Connect(const Node &node) override {
-    PS_VLOG(1) << "Connecting to " << my_node_.ShortDebugString();
+    PS_VLOG(1) << "Connecting to Node " << node.id << ", My_Node=" << my_node_.id;
     CHECK_NE(node.id, node.kEmpty);
     CHECK_NE(node.port, node.kEmpty);
     CHECK(node.hostname.size());
@@ -575,7 +138,6 @@ class IBVerbsVan : public Van {
       return;
     }
 
-    std::string node_host_ip = node.hostname + ":" + std::to_string(node.port);
     if (node.id != Node::kEmpty) {
       auto it = endpoints_.find(node.id);
 
@@ -585,7 +147,7 @@ class IBVerbsVan : public Van {
       }
 
       Endpoint *endpoint;
-      endpoints_[node.id] = std::unique_ptr<Endpoint>(new Endpoint());
+      endpoints_[node.id] = std::make_unique<Endpoint>();
       endpoint = endpoints_[node.id].get();
 
       endpoint->SetNodeID(node.id);
@@ -612,10 +174,34 @@ class IBVerbsVan : public Van {
             << "Create RDMA connection identifier failed";
         endpoint->cm_id->context = endpoint;
 
-        CHECK_EQ(rdma_resolve_addr(endpoint->cm_id, nullptr,
-                                   remote_addr->ai_addr, kTimeoutms),
-                 0)
-            << "Resolve RDMA address failed with errno: " << errno;
+        int max_retry = kMaxResolveRetry;
+        int port = kBasePort;
+        unsigned seed = static_cast<unsigned>(time(NULL) + port);
+        auto val = Environment::Get()->find("DMLC_NODE_HOST");
+        if (val) {
+          struct sockaddr_in addr;
+          memset(&addr, 0, sizeof(addr)); 
+          addr.sin_addr.s_addr = inet_addr(val);
+          addr.sin_family = AF_INET;
+          for (int i = 0; i < max_retry + 1; ++i) {
+            addr.sin_port = htons(port);
+            if (rdma_resolve_addr(endpoint->cm_id, 
+                                  reinterpret_cast<struct sockaddr *>(&addr),
+                                  remote_addr->ai_addr, kTimeoutms) == 0) {
+              break;
+            }
+            if (i == max_retry) {
+              port = -1;
+            } else {
+              port = 10000 + rand_r(&seed) % 40000;
+            }
+          }
+        } else {
+          CHECK_EQ(rdma_resolve_addr(endpoint->cm_id, nullptr,
+                                     remote_addr->ai_addr, kTimeoutms),
+                   0)
+              << "Resolve RDMA address failed with errno: " << strerror(errno);
+        }
 
         endpoint->cv.wait(lk, [endpoint] {
           return endpoint->status != Endpoint::CONNECTING;
@@ -625,100 +211,96 @@ class IBVerbsVan : public Van {
         std::this_thread::sleep_for(std::chrono::milliseconds(500));
       }
 
+    local_mu_.lock();
+    if (disable_ipc_) {
+      is_local_[node.id] = false;
+    } else {
+      is_local_[node.id] = (node.hostname == my_node_.hostname) ? true : false;
+    }
+    LOG(INFO) << "Connect to Node " << node.id 
+              << " with Transport=" << (is_local_[node.id]?"IPC" : "RDMA");
+    local_mu_.unlock();
+
+      std::shared_ptr<Transport> t = is_local_[node.id] ?
+          std::make_shared<IPCTransport>(endpoint, mem_allocator_.get()) :
+          std::make_shared<RDMATransport>(endpoint, mem_allocator_.get());
+      endpoint->SetTransport(t);
+
       freeaddrinfo(remote_addr);
     }
   }
 
-  int SendMsg(const Message &msg) override {
+  int SendMsg(Message &msg) override {
     int remote_id = msg.meta.recver;
     CHECK_NE(remote_id, Meta::kEmpty);
-
-    PBMeta meta;
-    PackMetaPB(msg.meta, &meta);
-
     CHECK_NE(endpoints_.find(remote_id), endpoints_.end());
     Endpoint *endpoint = endpoints_[remote_id].get();
-    MessageBuffer *msg_buf = new MessageBuffer();
 
-    size_t meta_len = meta.ByteSize();
+    int meta_len = GetPackMetaLen(msg.meta);
     size_t data_len = msg.meta.data_size;
     size_t total_len = meta_len + data_len;
-
     CHECK(meta_len);
 
-    // For control messages, inline the message content
-    // into the START message.
-    // Otherwise, register the data buffer as RDMA memory
-    // region.
-    if (!msg.meta.control.empty()) {  // control message
-      msg_buf->inline_len = total_len;
-      msg_buf->inline_buf = mempool_->Alloc(total_len);
-      meta.SerializeToArray(msg_buf->inline_buf, meta_len);
-      char *cur = msg_buf->inline_buf + meta_len;
-      for (auto &sa : msg.data) {
-        size_t seg_len = sa.size();
-        memcpy(cur, sa.data(), seg_len);
-        cur += seg_len;
-      }
-    } else {  // data message
-      msg_buf->inline_len = meta_len;
-      msg_buf->inline_buf = mempool_->Alloc(meta_len);
-      msg_buf->data = msg.data;
-      meta.SerializeToArray(msg_buf->inline_buf, meta_len);
+    RegisterMemory(msg);
 
-      for (auto &sa : msg_buf->data) {
-        if (sa.size() == 0) {
-          continue;
-        }
-        // Optimization: If the memory region has been registered,
-        // (assuming the previously registered address is not freed)
-        // re-use the same memory region.
-        char *p = sa.data();
-        auto it = allocated_mr_.find(p);
-        if (it == allocated_mr_.end()) {
-          allocated_mr_[p] = ibv_reg_mr(pd_, p, sa.size(), 0);
-        }
-        CHECK(allocated_mr_[p]) << "Invalid memory region";
-        msg_buf->mrs.push_back({allocated_mr_[p], sa.size()});
-      }
+    // pack meta info
+    if (IsValidPushpull(msg)) {
+      AddMeta(msg);
+      PackWorkerTensorAddress(msg);
     }
 
-    // Take the second context buffer first to avoid deadlock
-    WRContext *context = nullptr, *reserved = nullptr;
-    endpoint->free_write_ctx.WaitAndPop(&reserved);
-    endpoint->free_start_ctx.WaitAndPop(&context);
+    auto trans = CHECK_NOTNULL(endpoint->GetTransport());
 
-    msg_buf->reserved_context = reserved;
+    // start rendezvous if no remote info
+    if (!IsValidPushpull(msg)) { 
+      MessageBuffer *msg_buf = PrepareNewMsgBuf(msg);
+      StoreMsgBuf(msg_buf, msg);
+      trans->SendRendezvousBegin(msg, msg_buf);
+      return total_len;
 
-    RendezvousStart *req =
-        reinterpret_cast<RendezvousStart *>(context->buffer->addr);
-    req->meta_len = meta_len;
-
-    for (size_t i = 0; i < msg.data.size(); ++i) {
-      req->data_len[i] = msg.data[i].size();
+    } else {
+      auto is_push = msg.meta.push;
+      auto key = msg.meta.key;
+      if (!HasRemoteInfo(msg, key, is_push, remote_id)) {
+        MessageBuffer *msg_buf = PrepareNewMsgBuf(msg);
+        StoreMsgBuf(msg_buf, msg);
+        PrepareData(msg, msg_buf);
+        trans->SendRendezvousBegin(msg, msg_buf);
+        return total_len;
+      } 
     }
-    req->data_num = msg.data.size();
-    req->origin_addr = reinterpret_cast<uint64_t>(msg_buf);
 
-    struct ibv_sge sge;
-    sge.addr = reinterpret_cast<uint64_t>(req);
-    sge.length = sizeof(RendezvousStart);
-    sge.lkey = context->buffer->lkey;
+    auto addr_tuple = GetRemoteAndLocalInfo(msg.meta.key, msg.meta.push, remote_id);
+    MessageBuffer *msg_buf = std::get<3>(addr_tuple); // local message buffer
+    
+    // prepare new meta and data
+    CHECK_EQ(msg_buf->inline_len, (size_t) meta_len);
+    CHECK(msg_buf->inline_buf);
+    msg_buf->data = msg.data; // may not need this
+    PackMeta(msg.meta, &(msg_buf->inline_buf), &meta_len);
 
-    struct ibv_send_wr wr, *bad_wr = nullptr;
-    memset(&wr, 0, sizeof(wr));
+    PrintSendLog(msg, msg_buf, addr_tuple);
 
-    wr.wr_id = reinterpret_cast<uint64_t>(context);
-    wr.opcode = IBV_WR_SEND_WITH_IMM;
-    wr.next = nullptr;
-
-    wr.imm_data = kRendezvousStart;
-
-    wr.send_flags = IBV_SEND_SIGNALED;
-    wr.sg_list = &sge;
-    wr.num_sge = 1;
-    CHECK_EQ(ibv_post_send(endpoint->cm_id->qp, &wr, &bad_wr), 0)
-        << strerror(errno);
+    // already know remote address, directly use RDMA-write 
+    if (msg.meta.push && msg.meta.request) { 
+      // worker, push request
+      trans->SendPushRequest(msg, msg_buf, addr_tuple);
+    } else if (msg.meta.push && !msg.meta.request) { 
+      // server, push response
+      trans->SendPushResponse(msg, msg_buf, addr_tuple);
+    } else if (!msg.meta.push && msg.meta.request) { 
+      // worker, pull request
+      trans->SendPullRequest(msg, msg_buf, addr_tuple);
+    } else if (!msg.meta.push && !msg.meta.request) { 
+      // server, pull response
+      map_mu_.lock();
+      auto temp_mr = mem_mr_.find(msg_buf->data[1].data());
+      CHECK_NE(temp_mr, mem_mr_.end());
+      map_mu_.unlock();
+      trans->SendPullResponse(msg, msg_buf, addr_tuple, temp_mr->second->lkey);
+    } else {
+      CHECK(0) << "unexpected message type";
+    }
 
     return total_len;
   }
@@ -728,44 +310,275 @@ class IBVerbsVan : public Van {
     std::tuple<Endpoint *, BufferContext *> notification;
     recv_buffers_.WaitAndPop(&notification);
 
-    Endpoint *endpoint = std::get<0>(notification);
-    BufferContext *buffer_ctx = std::get<1>(notification);
-
-    int total_len = 0;
+    Endpoint *endpoint = std::get<Endpoint *>(notification);
+    BufferContext *buffer_ctx = std::get<BufferContext *>(notification);
 
     msg->meta.recver = my_node_.id;
     msg->meta.sender = endpoint->node_id;
 
-    char *cur = buffer_ctx->buffer;
+    // the second argument is actually deprecated, 
+    // we keep it as is in order to be compatible    
+    UnpackMeta(buffer_ctx->buffer, buffer_ctx->meta_len, &msg->meta); 
+    int meta_len = GetPackMetaLen(msg->meta);
 
-    UnpackMeta(cur, buffer_ctx->meta_len, &msg->meta);
-    total_len += buffer_ctx->meta_len;
-    uint64_t data_num = buffer_ctx->data_num;
-    cur += buffer_ctx->meta_len;
+    int total_len = 0;
+    total_len += meta_len;
 
-    if (data_num > 0) {
-      Block *mem_block =
-          new Block(mempool_.get(), buffer_ctx->buffer, data_num);
+    auto trans = CHECK_NOTNULL(endpoint->GetTransport());
 
-      for (size_t i = 0; i < data_num; i++) {
-        uint32_t len = buffer_ctx->data_len[i];
-        SArray<char> data;
-        data.reset(cur, len, [mem_block](void *) {
-          mem_block->Release();
-        });  // Defer the deletion of block_ref
-        msg->data.push_back(data);
-        cur += len;
-        total_len += len;
-      }
-    } else {
-      mempool_->Free(buffer_ctx->buffer);
+    PrintRecvLog(msg, buffer_ctx, meta_len);
+
+    if (!IsValidPushpull(*msg)) {
+      return total_len;
     }
 
-    delete buffer_ctx;
+    // valid data message
+    if (msg->meta.push && msg->meta.request) { 
+      // push request
+      total_len += trans->RecvPushRequest(msg, buffer_ctx, meta_len);
+      StoreWorkerTensorAddress(msg);
+    } else if (!msg->meta.push && msg->meta.request) { 
+      // pull request
+      total_len += trans->RecvPullRequest(msg, buffer_ctx, meta_len);
+    } else if (msg->meta.push && !msg->meta.request) { 
+      // push response
+      total_len += trans->RecvPushResponse(msg, buffer_ctx, meta_len);
+    } else if (!msg->meta.push && !msg->meta.request) { 
+      // pull response
+      total_len += trans->RecvPullResponse(msg, buffer_ctx, meta_len);
+    } else {
+      CHECK(0) << "unknown msg type";
+    }
+
     return total_len;
   }
 
  private:
+
+  void PrintSendLog(Message &msg, MessageBuffer *msg_buf, RemoteTuple remote_tuple) {
+    if (!enable_log_) return;
+    std::lock_guard<std::mutex> lock(log_mu_);
+
+    if (!IsValidPushpull(msg)) {
+      LOG(INFO) << "Send Control Message" << std::flush;
+    } else if (msg.meta.push && msg.meta.request) { 
+      // worker, push request
+      LOG(INFO) << "Send Push Request: key=" << msg.meta.key
+          << "\t timestamp=" << msg.meta.timestamp 
+          << "\t recver=" << msg.meta.recver
+          << "\t tensor_len=" << msg_buf->mrs[0].second
+          << "\t remote_idx=" << std::get<2>(remote_tuple)
+          << "\t remote_addr=" << std::get<0>(remote_tuple) 
+          << std::flush;
+    } else if (msg.meta.push && !msg.meta.request) { 
+      // server, push response
+      LOG(INFO) << "Send Push Response: key=" << msg.meta.key
+          << "\t timestamp=" << msg.meta.timestamp 
+          << "\t recver=" << msg.meta.recver
+          << "\t remote_idx=" << std::get<2>(remote_tuple)
+          << "\t remote_addr=" << std::get<0>(remote_tuple)
+          << std::flush;
+    } else if (!msg.meta.push && msg.meta.request) { 
+      // worker, pull request
+      LOG(INFO) << "Send Pull Request: key=" << msg.meta.key
+          << "\t timestamp=" << msg.meta.timestamp 
+          << "\t recver=" << msg.meta.recver
+          << "\t remote_idx=" << std::get<2>(remote_tuple)
+          << "\t remote_addr=" << std::get<0>(remote_tuple)
+          << std::flush;
+    } else if (!msg.meta.push && !msg.meta.request) { 
+      // server, pull response
+      LOG(INFO) << "Send Pull Response: key=" << msg.meta.key
+          << "\t timestamp=" << msg.meta.timestamp 
+          << "\t recver=" << msg.meta.recver
+          << "\t tensor_len=" << msg.meta.val_len
+          << "\t idx=" << "none"
+          << "\t remote_addr=" << msg.meta.addr
+          << std::flush;
+    }
+
+  }
+
+  void PrintRecvLog(Message *msg, BufferContext *buffer_ctx, int meta_len) {
+    if (!enable_log_) return;
+    std::lock_guard<std::mutex> lock(log_mu_);
+
+    if (!IsValidPushpull(*msg)) {
+      LOG(INFO) << "Recv Control Message" << std::flush;
+    } else if (msg->meta.push && msg->meta.request) { 
+      // push request
+      LOG(INFO) << "Recv Push Request: key=" << msg->meta.key
+          << "\t timestamp=" << msg->meta.timestamp 
+          << "\t sender=" << msg->meta.sender
+          << "\t tensor_len=" << buffer_ctx->data_len[1]
+          << std::flush;
+    } else if (!msg->meta.push && msg->meta.request) { 
+      // pull request
+      LOG(INFO) << "Recv Pull Request: key=" << msg->meta.key
+          << "\t timestamp=" << msg->meta.timestamp 
+          << "\t sender=" << msg->meta.sender
+          << std::flush;
+    } else if (msg->meta.push && !msg->meta.request) { 
+      // push response
+      LOG(INFO) << "Recv Push Response: key=" << msg->meta.key
+          << "\t timestamp=" << msg->meta.timestamp 
+          << "\t sender=" << msg->meta.sender
+          << std::flush;
+    } else if (!msg->meta.push && !msg->meta.request) { 
+      // pull response
+      LOG(INFO) << "Recv Pull Response: key=" << msg->meta.key
+          << "\t timestamp=" << msg->meta.timestamp 
+          << "\t sender=" << msg->meta.sender
+          << "\t tensor_len=" << msg->meta.val_len;
+    }
+  }
+
+  void PackWorkerTensorAddress(Message &msg) {
+    // must be pull response
+    if (msg.meta.push || msg.meta.request) return;
+    
+    uint64_t key = msg.meta.key;
+    auto recver = msg.meta.recver;
+
+    std::lock_guard<std::mutex> lock(info_mu_);
+    CHECK_NE(tensor_info_map_.find(key), tensor_info_map_.end());
+    CHECK_NE(tensor_info_map_[key].find(recver), tensor_info_map_[key].end());
+    msg.meta.val_len = std::get<0>(tensor_info_map_[key][recver]);
+    msg.meta.addr = std::get<1>(tensor_info_map_[key][recver]);
+    msg.meta.option = std::get<2>(tensor_info_map_[key][recver]);
+  }
+
+  void StoreWorkerTensorAddress(Message *msg) {
+    auto key = msg->meta.key;
+    auto len = msg->meta.val_len;
+    auto addr = msg->meta.addr;
+    auto rkey = msg->meta.option;
+    auto sender = msg->meta.sender;
+
+    std::lock_guard<std::mutex> lock(info_mu_);
+    if (tensor_info_map_.find(key) == tensor_info_map_.end()
+          || tensor_info_map_[key].find(sender) == tensor_info_map_[key].end()) {
+      tensor_info_map_[key][sender] = std::make_tuple(len, addr, rkey);
+    } else {
+      CHECK_EQ(len, std::get<0>(tensor_info_map_[key][sender]));
+      CHECK_EQ(addr, std::get<1>(tensor_info_map_[key][sender]));
+      CHECK_EQ(rkey, std::get<2>(tensor_info_map_[key][sender]));
+    }
+  }
+
+  bool HasRemoteInfo(Message& msg, uint64_t key, bool is_push, int recver) {
+    std::lock_guard<std::mutex> lk(addr_mu_);
+    if (is_push && (push_addr_.find(key) != push_addr_.end()) 
+        && (push_addr_[key].find(recver) != push_addr_[key].end())) {
+      return true;
+    }
+    if (!is_push && (pull_addr_.find(key) != pull_addr_.end()) 
+        && (pull_addr_[key].find(recver) != pull_addr_[key].end())) {
+      return true;
+    }
+
+    return false;
+  }
+
+  void StoreMsgBuf(MessageBuffer *msg_buf, Message& msg) {
+    std::lock_guard<std::mutex> lk(addr_mu_);
+    CHECK_EQ(msgbuf_cache_.find(msg_buf), msgbuf_cache_.end());
+    msgbuf_cache_[msg_buf] = msg;
+  }  
+  
+  Message* GetFirstMsg(MessageBuffer *msg_buf) {
+    std::lock_guard<std::mutex> lk(addr_mu_);
+    CHECK_NE(msgbuf_cache_.find(msg_buf), msgbuf_cache_.end());
+    return &msgbuf_cache_[msg_buf];
+  }  
+
+  void ReleaseFirstMsg(MessageBuffer *msg_buf) {
+    std::lock_guard<std::mutex> lk(addr_mu_);
+    CHECK_NE(msgbuf_cache_.find(msg_buf), msgbuf_cache_.end());
+    msgbuf_cache_.erase(msg_buf);
+  }  
+  
+  void StoreRemoteAndLocalInfo(MessageBuffer *msg_buf, uint64_t remote_addr, uint32_t rkey, uint32_t idx) {
+    std::lock_guard<std::mutex> lk(addr_mu_);
+
+    CHECK_NE(msgbuf_cache_.find(msg_buf), msgbuf_cache_.end());
+
+    auto& msg = msgbuf_cache_[msg_buf];
+    
+    auto key = msg.meta.key;
+    auto is_push = msg.meta.push;
+    auto recver = msg.meta.recver;
+
+    auto t = std::make_tuple(remote_addr, rkey, idx, msg_buf);
+    if (is_push) {
+      push_addr_[key][recver] = t;
+    } else {
+      pull_addr_[key][recver] = t;
+    }
+  }
+
+  RemoteTuple GetRemoteAndLocalInfo(uint64_t key, bool is_push, int recver) {
+    std::lock_guard<std::mutex> lk(addr_mu_);
+    return (is_push ? push_addr_[key][recver] : pull_addr_[key][recver]);
+  }
+
+  MessageBuffer* PrepareNewMsgBuf(Message& msg) {
+    MessageBuffer *msg_buf = new MessageBuffer();
+    auto meta_len = GetPackMetaLen(msg.meta);
+    msg_buf->inline_len = meta_len;
+    msg_buf->inline_buf = mem_allocator_->Alloc(meta_len);
+    msg_buf->data = msg.data;
+    PackMeta(msg.meta, &(msg_buf->inline_buf), &meta_len);
+    return msg_buf;
+  }
+
+  void RegisterMemory(Message &msg) { 
+    size_t sa_cnt = 0;
+    for (auto& sa : msg.data) {
+      if (sa.size() == 0) continue;
+      std::lock_guard<std::mutex> lock(map_mu_);
+      if ((mem_mr_.find(sa.data()) == mem_mr_.end()) && (sa_cnt==1)) { // only vals register memory
+        struct ibv_mr *temp_mr;
+        CHECK (temp_mr = ibv_reg_mr(mem_allocator_->GetPD(), sa.data(), sa.size(),
+            IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE))
+            << "Failed to register the memory region: " << strerror(errno)
+            << ", sa.size()=" << sa.size();
+        mem_mr_[sa.data()] = temp_mr;
+      }
+      ++sa_cnt;
+    }
+  }
+
+  void PrepareData(Message &msg, MessageBuffer *msg_buf) {
+    if (!(msg.meta.push && msg.meta.request)) return; // only push request
+    auto &sa = msg_buf->data[1];
+    if (sa.size() == 0) return;
+    std::lock_guard<std::mutex> lock(map_mu_);
+    auto it = mem_mr_.find(sa.data());
+    CHECK_NE(it, mem_mr_.end());
+    MRPtr ptr(it->second, [](struct ibv_mr *mr) {});
+    CHECK(ptr.get()) << strerror(errno);
+    msg_buf->mrs.push_back(std::make_pair(std::move(ptr), sa.size()));
+  }
+
+  void AddMeta(Message &msg) {
+    if (msg.meta.request) {
+      msg.meta.key = DecodeKey(msg.data[0]);
+    }
+    if (msg.meta.push && msg.meta.request) { 
+      // push request
+      CHECK_EQ(msg.data.size(), 3) << msg.data.size();
+
+      std::lock_guard<std::mutex> lock(map_mu_);
+      CHECK_NE(mem_mr_.find(msg.data[1].data()), mem_mr_.end());
+
+      auto& vals = msg.data[1];
+      msg.meta.addr = reinterpret_cast<uint64_t>(vals.data()); // vals address
+      msg.meta.val_len = vals.size();
+      msg.meta.option = mem_mr_[vals.data()]->rkey;
+    }
+  }
+
   void InitContext(struct ibv_context *context) {
     context_ = context;
     CHECK(context_) << "ibv_context* empty";
@@ -773,7 +586,7 @@ class IBVerbsVan : public Van {
     pd_ = ibv_alloc_pd(context_);
     CHECK(pd_) << "Failed to allocate protection domain";
 
-    mempool_.reset(new SimpleMempool(pd_));
+    mem_allocator_.reset(new MemoryAllocator(pd_));
 
     comp_event_channel_ = ibv_create_comp_channel(context_);
 
@@ -792,9 +605,6 @@ class IBVerbsVan : public Van {
         break;
       case kRendezvousReplyContext:
         endpoint->free_reply_ctx.Push(context);
-        break;
-      case kWriteContext:
-        endpoint->free_write_ctx.Push(context);
         break;
       case kReceiveContext:
         endpoint->PostRecv(context);
@@ -815,31 +625,24 @@ class IBVerbsVan : public Van {
             << "Failed status \n"
             << ibv_wc_status_str(wc[i].status) << " " << wc[i].status << " "
             << static_cast<uint64_t>(wc[i].wr_id) << " " << wc[i].vendor_err;
-
+            
         WRContext *context = reinterpret_cast<WRContext *>(wc[i].wr_id);
         Endpoint *endpoint =
             reinterpret_cast<Endpoint *>(context->private_data);
 
-        CHECK(endpoint);
+        // IBV_WC_RDMA_WRITE use msg_buf as the wr_id
+        // so there won't be context and endpoint for this op
 
         switch (wc[i].opcode) {
-          case IBV_WC_SEND:
-            // LOG(INFO) << "opcode: IBV_WC_SEND";
-            ReleaseWorkRequestContext(context, endpoint);
-            break;
-          case IBV_WC_RDMA_WRITE: {
-            // LOG(INFO) << "opcode: IBV_WC_RDMA_WRITE";
-            // Note: This is not a struct ibv_mr*
-            MessageBuffer *msg_buf =
-                *reinterpret_cast<MessageBuffer **>(context->buffer->addr);
-            mempool_->Free(msg_buf->inline_buf);
-            delete msg_buf;
+          case IBV_WC_SEND: {
             ReleaseWorkRequestContext(context, endpoint);
           } break;
+          case IBV_WC_RDMA_WRITE: {
+            // do nothing
+          } break;
           case IBV_WC_RECV_RDMA_WITH_IMM: {
-            // LOG(INFO) << "opcode: IBV_WC_RECV_RDMA_WITH_IMM";
             uint32_t addr_idx = wc[i].imm_data;
-            BufferContext *buf_ctx = addr_pool_.GetAddressAndRelease(addr_idx);
+            BufferContext *buf_ctx = addr_pool_.GetAddress(addr_idx);
             recv_buffers_.Push(std::make_tuple(endpoint, buf_ctx));
             ReleaseWorkRequestContext(context, endpoint);
           } break;
@@ -849,60 +652,12 @@ class IBVerbsVan : public Van {
             struct ibv_mr *mr = context->buffer;
 
             if (imm == kRendezvousStart) {
-              // LOG(INFO) << "opcode: IBV_WC_RECV kRendezvousStart";
               RendezvousStart *req =
                   reinterpret_cast<RendezvousStart *>(mr->addr);
-              BufferContext *buf_ctx = new BufferContext();
-
-              uint64_t len = req->meta_len;
-              buf_ctx->meta_len = len;
-              buf_ctx->data_num = req->data_num;
-              for (size_t i = 0; i < req->data_num; ++i) {
-                buf_ctx->data_len[i] = req->data_len[i];
-                len += req->data_len[i];
-              }
-
-              char *buffer = mempool_->Alloc(len);
-              CHECK(buffer) << "Alloc for " << len
-                            << " bytes, data_num: " << req->data_num;
-
-              buf_ctx->buffer = buffer;
-
-              uint64_t origin_addr = req->origin_addr;
-
-              WRContext *reply_ctx = nullptr;
-              endpoint->free_reply_ctx.WaitAndPop(&reply_ctx);
-              RendezvousReply *resp =
-                  reinterpret_cast<RendezvousReply *>(reply_ctx->buffer->addr);
-
-              resp->addr = reinterpret_cast<uint64_t>(buffer);
-              resp->rkey = mempool_->RemoteKey(buffer);
-              resp->origin_addr = origin_addr;
-              resp->idx = addr_pool_.StoreAddress(buf_ctx);
-
-              struct ibv_sge sge;
-              sge.addr = reinterpret_cast<uint64_t>(resp);
-              sge.length = sizeof(RendezvousReply);
-              sge.lkey = reply_ctx->buffer->lkey;
-
-              struct ibv_send_wr wr, *bad_wr = nullptr;
-              memset(&wr, 0, sizeof(wr));
-
-              wr.wr_id = reinterpret_cast<uint64_t>(reply_ctx);
-              wr.opcode = IBV_WR_SEND_WITH_IMM;
-              wr.next = nullptr;
-
-              wr.imm_data = kRendezvousReply;
-
-              wr.send_flags = IBV_SEND_SIGNALED;
-              wr.sg_list = &sge;
-              wr.num_sge = 1;
-
-              CHECK_EQ(ibv_post_send(endpoint->cm_id->qp, &wr, &bad_wr), 0)
-                  << "ibv_post_send failed.";
-
+              auto trans = CHECK_NOTNULL(endpoint->GetTransport());
+              trans->SendRendezvousReply(req, addr_pool_);
+              
             } else if (imm == kRendezvousReply) {
-              // LOG(INFO) << "opcode: IBV_WC_RECV kRendezvousReply";
               RendezvousReply *resp =
                   reinterpret_cast<RendezvousReply *>(mr->addr);
               uint64_t remote_addr = resp->addr;
@@ -913,47 +668,40 @@ class IBVerbsVan : public Van {
               MessageBuffer *msg_buf =
                   reinterpret_cast<MessageBuffer *>(origin_addr);
 
-              struct ibv_sge sge[1 + msg_buf->mrs.size()];
+              // Before RDMA write, store the remote info so that 
+              // subsequent write does not need repeated rendezvous 
+              StoreRemoteAndLocalInfo(msg_buf, remote_addr, rkey, idx);
 
-              sge[0].addr = reinterpret_cast<uint64_t>(msg_buf->inline_buf);
-              sge[0].length = msg_buf->inline_len;
-              sge[0].lkey = mempool_->LocalKey(msg_buf->inline_buf);
+              Message *msg = GetFirstMsg(msg_buf);
 
-              size_t num_sge = 1;
-              for (auto &pair : msg_buf->mrs) {
-                size_t length = pair.second;
-                CHECK(length);
-                sge[num_sge].addr =
-                    reinterpret_cast<uint64_t>(pair.first->addr);
-                sge[num_sge].length = length;
-                sge[num_sge].lkey = pair.first->lkey;
-                ++num_sge;
+              auto addr_tuple = GetRemoteAndLocalInfo(msg->meta.key, msg->meta.push, msg->meta.recver);
+
+              PrintSendLog(*msg, msg_buf, addr_tuple);
+
+              auto trans = CHECK_NOTNULL(endpoint->GetTransport());
+              if (!IsValidPushpull(*msg)) {
+                // control message
+                trans->RDMAWriteWithImm(msg_buf, remote_addr, rkey, idx);
+              } else if (msg->meta.push && msg->meta.request) { 
+                // worker, push request
+                trans->SendPushRequest(*msg, msg_buf, addr_tuple);
+              } else if (msg->meta.push && !msg->meta.request) { 
+                // server, push response
+                trans->SendPushResponse(*msg, msg_buf, addr_tuple);
+              } else if (!msg->meta.push && msg->meta.request) { 
+                // worker, pull request
+                trans->SendPullRequest(*msg, msg_buf, addr_tuple);
+              } else if (!msg->meta.push && !msg->meta.request) { 
+                // server, pull response
+                map_mu_.lock();
+                auto temp_mr = mem_mr_.find(msg_buf->data[1].data());
+                CHECK_NE(temp_mr, mem_mr_.end());
+                map_mu_.unlock();
+                trans->SendPullResponse(*msg, msg_buf, addr_tuple, temp_mr->second->lkey);
               }
 
-              WRContext *write_ctx = msg_buf->reserved_context;
-
-              MessageBuffer **tmp =
-                  reinterpret_cast<MessageBuffer **>(write_ctx->buffer->addr);
-              *tmp = msg_buf;  // write the addr of msg_buf into the mr buffer
-
-              struct ibv_send_wr wr, *bad_wr = nullptr;
-              memset(&wr, 0, sizeof(wr));
-
-              wr.wr_id = reinterpret_cast<uint64_t>(write_ctx);
-              wr.opcode = IBV_WR_RDMA_WRITE_WITH_IMM;
-              wr.next = nullptr;
-
-              wr.imm_data = idx;
-
-              wr.send_flags = IBV_SEND_SIGNALED;
-              wr.sg_list = sge;
-              wr.num_sge = num_sge;
-
-              wr.wr.rdma.remote_addr = remote_addr;
-              wr.wr.rdma.rkey = rkey;
-
-              CHECK_EQ(ibv_post_send(endpoint->cm_id->qp, &wr, &bad_wr), 0)
-                  << "ibv_post_send failed.";
+              // release the msg_buf from msgbuf_cache_
+              ReleaseFirstMsg(msg_buf);
 
             } else {
               CHECK(0);
@@ -1045,7 +793,7 @@ class IBVerbsVan : public Van {
     const RequestContext *remote_ctx = reinterpret_cast<const RequestContext *>(
         event->param.conn.private_data);
 
-    const auto r = incoming_.emplace(std::unique_ptr<Endpoint>(new Endpoint()));
+    const auto r = incoming_.emplace(std::make_unique<Endpoint>());
     Endpoint *endpoint = r.first->get();
     endpoint->SetNodeID(remote_ctx->node);
     endpoint->cm_id = id;
@@ -1056,6 +804,21 @@ class IBVerbsVan : public Van {
     }
 
     endpoint->Init(cq_, pd_);
+
+    local_mu_.lock();
+    if (disable_ipc_) {
+      is_local_[remote_ctx->node] = false;
+    } else {
+      is_local_[remote_ctx->node] = (std::string(remote_ctx->hostname) == my_node_.hostname) ? true : false;
+    }
+    LOG(INFO) << "OnConnect to Node " << remote_ctx->node 
+              << " with Transport=" << (is_local_[remote_ctx->node]?"IPC" : "RDMA");
+    local_mu_.unlock();
+
+    std::shared_ptr<Transport> t = is_local_[remote_ctx->node] ?
+        std::make_shared<IPCTransport>(endpoint, mem_allocator_.get()) :
+        std::make_shared<RDMATransport>(endpoint, mem_allocator_.get());
+    endpoint->SetTransport(t);
 
     RequestContext ctx;
     ctx.node = static_cast<uint32_t>(my_node_.id);
@@ -1084,7 +847,7 @@ class IBVerbsVan : public Van {
   void OnRouteResolved(struct rdma_cm_event *event) {
     struct rdma_cm_id *id = event->id;
     Endpoint *endpoint = reinterpret_cast<Endpoint *>(id->context);
-
+    
     if (context_ == nullptr) {
       InitContext(id->verbs);
     }
@@ -1114,7 +877,7 @@ class IBVerbsVan : public Van {
     CHECK(endpoint) << "Endpoint not found.";
 
     if (cq_polling_thread_ == nullptr) {
-      cq_polling_thread_.reset(new std::thread(&IBVerbsVan::PollCQ, this));
+      cq_polling_thread_.reset(new std::thread(&RDMAVan::PollCQ, this));
     }
 
     CHECK_EQ(endpoint->cm_id, id);
@@ -1123,10 +886,12 @@ class IBVerbsVan : public Van {
       endpoint->status = Endpoint::CONNECTED;
     }
     endpoint->cv.notify_all();
+    if (endpoint->node_id != my_node_.id) {
+      PS_VLOG(1) << "OnConnected to Node " << endpoint->node_id;
+    }
   }
 
   void OnDisconnected(struct rdma_cm_event *event) {
-    LOG(INFO) << "OnDisconnected from Node " << my_node_.id;
     struct rdma_cm_id *id = event->id;
     Endpoint *endpoint = reinterpret_cast<Endpoint *>(id->context);
     {
@@ -1134,10 +899,14 @@ class IBVerbsVan : public Van {
       endpoint->status = Endpoint::IDLE;
     }
     endpoint->cv.notify_all();
+    LOG(INFO) << "OnDisconnected from Node " << endpoint->node_id;
   }
 
   AddressPool<BufferContext> addr_pool_;
-  std::unique_ptr<SimpleMempool> mempool_;
+  std::unique_ptr<MemoryAllocator> mem_allocator_;
+
+  std::unique_ptr<RDMATransport> rdma_trans_;
+  std::unique_ptr<IPCTransport> ipc_trans_;
 
   struct rdma_cm_id *listener_ = nullptr;
   std::atomic<bool> should_stop_;
@@ -1147,8 +916,6 @@ class IBVerbsVan : public Van {
 
   struct rdma_event_channel *event_channel_ = nullptr;
   struct ibv_context *context_ = nullptr;
-
-  std::unordered_map<char *, struct ibv_mr *> allocated_mr_;
 
   // ibverbs protection domain
   struct ibv_pd *pd_ = nullptr;
@@ -1162,8 +929,34 @@ class IBVerbsVan : public Van {
   std::unique_ptr<std::thread> cm_event_polling_thread_;
   // Recv buffer queue
   ThreadsafeQueue<std::tuple<Endpoint *, BufferContext *>> recv_buffers_;
-};  // namespace ps
+
+  // local IPC related
+  bool disable_ipc_ = false;
+  std::mutex local_mu_;
+  std::unordered_map<int, bool> is_local_;
+
+  // worker's tensor address
+  std::mutex info_mu_;
+  using TensorInfo = std::tuple<int, uint64_t, int>; // len, addr, rkey
+  using RemoteTensorMeta = std::unordered_map<int, TensorInfo>; // sender as the key
+  std::unordered_map<ps::Key, RemoteTensorMeta> tensor_info_map_; // (key, sender) --> TensorInfo
+
+  std::mutex addr_mu_;
+  // <key, recver>, (<remote_addr, rkey, idx, local_addr>)
+  std::unordered_map<uint64_t, RemoteAndLocalAddress> push_addr_; 
+  std::unordered_map<uint64_t, RemoteAndLocalAddress> pull_addr_; 
+  std::unordered_map<MessageBuffer*, Message> msgbuf_cache_; // msg_buf, msg
+
+  std::mutex map_mu_;
+  std::unordered_map<char*, struct ibv_mr*> mem_mr_; // (memory address, ibv_mr) 
+
+  // logging
+  bool enable_log_;
+  std::mutex log_mu_;
+
+};  // class RDMAVan
+
 };  // namespace ps
 
-#endif  // DMLC_USE_IBVERBS
-#endif  // PS_IBVERBS_VAN_H_
+#endif  // DMLC_USE_RDMA
+#endif  // PS_RDMA_VAN_H_
