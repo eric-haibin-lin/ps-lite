@@ -12,9 +12,8 @@
 #include <thread>
 #include <memory>
 #include "ps/internal/message.h"
-#include "ps/internal/threadsafe_pqueue.h"
+#include "ps/internal/threadsafe_queue.h"
 namespace ps {
-
 /**
  * \brief The object for communication.
  *
@@ -100,7 +99,7 @@ class Customer {
   int customer_id_;
 
   RecvHandle recv_handle_;
-  ThreadsafePQueue recv_queue_;
+  ThreadsafeQueue<Message> recv_queue_;
   std::unique_ptr<std::thread> recv_thread_;
 
   std::mutex tracker_mu_;

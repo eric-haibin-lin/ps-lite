@@ -14,22 +14,25 @@ shift
 arg="$@"
 
 # start the scheduler
-export DMLC_PS_ROOT_URI='127.0.0.1'
-export DMLC_PS_ROOT_PORT=8000
+export DMLC_PS_ROOT_URI=${DMLC_PS_ROOT_URI:-'127.0.0.1'}
+export DMLC_PS_ROOT_PORT=${DMLC_PS_ROOT_PORT:-8000}
+export DMLC_INTERFACE=${DMLC_INTERFACE:-eth10}
 export DMLC_ROLE='scheduler'
-${bin} ${arg} scheduler&
+${bin} ${arg} &
 
 
 # start servers
 export DMLC_ROLE='server'
 for ((i=0; i<${DMLC_NUM_SERVER}; ++i)); do
     export HEAPPROFILE=./S${i}
-    ${bin} ${arg} server&
+    ${bin} ${arg} &
 done
 
 # start workers
 export DMLC_ROLE='worker'
-export HEAPPROFILE=./W${i}
-${bin} ${arg} worker&
+for ((i=0; i<${DMLC_NUM_WORKER}; ++i)); do
+    export HEAPPROFILE=./W${i}
+    ${bin} ${arg} &
+done
 
 wait

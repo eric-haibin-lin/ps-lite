@@ -53,7 +53,6 @@ class SArray {
    */
   explicit SArray(size_t size, V val = 0) { resize(size, val); }
 
-
   /**
    * \brief construct from another SArray.
    *

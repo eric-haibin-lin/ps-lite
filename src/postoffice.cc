@@ -15,8 +15,13 @@ Postoffice::Postoffice() {
 
 void Postoffice::InitEnvironment() {
   const char* val = NULL;
-  std::string van_type = GetEnv("DMLC_PS_VAN_TYPE", "zmq");
-  van_ = Van::Create(van_type);
+  int enable_rdma = GetEnv("DMLC_ENABLE_RDMA", 0);
+  if (enable_rdma) {
+    LOG(INFO) << "enable RDMA for networking";
+    van_ = Van::Create("rdma");
+  } else {
+    van_ = Van::Create("zmq");
+  }
   val = CHECK_NOTNULL(Environment::Get()->find("DMLC_NUM_WORKER"));
   num_workers_ = atoi(val);
   val =  CHECK_NOTNULL(Environment::Get()->find("DMLC_NUM_SERVER"));
@@ -149,7 +154,6 @@ void Postoffice::Barrier(int customer_id, int node_group) {
   } else if (role == Node::SERVER) {
     CHECK(node_group & kServerGroup);
   }
-
   std::unique_lock<std::mutex> ulk(barrier_mu_);
   barrier_done_[0][customer_id] = false;
   Message req;
@@ -160,7 +164,7 @@ void Postoffice::Barrier(int customer_id, int node_group) {
   req.meta.customer_id = customer_id;
   req.meta.control.barrier_group = node_group;
   req.meta.timestamp = van_->GetTimestamp();
-  van_->Send(req);
+  CHECK_GT(van_->Send(req), 0);
   barrier_cond_.wait(ulk, [this, customer_id] {
       return barrier_done_[0][customer_id];
     });

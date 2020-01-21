@@ -1,10 +1,17 @@
-/**
- *  Copyright (c) 2015 by Contributors
+/**	
+ *  Copyright (c) 2015 by Contributors	
  */
 #include "ps/internal/customer.h"
 #include "ps/internal/postoffice.h"
-namespace ps {
+#include "ps/internal/threadsafe_queue.h"
+#include <map>
+#include <atomic>
+#include <set>
+#include <list>
+#include <fstream>
+#include <chrono>
 
+namespace ps {
 const int Node::kEmpty = std::numeric_limits<int>::max();
 const int Meta::kEmpty = std::numeric_limits<int>::max();
 
@@ -50,8 +57,8 @@ void Customer::Receiving() {
   while (true) {
     Message recv;
     recv_queue_.WaitAndPop(&recv);
-    if (!recv.meta.control.empty() &&
-        recv.meta.control.cmd == Control::TERMINATE) {
+    if (!recv.meta.control.empty() 
+          && recv.meta.control.cmd == Control::TERMINATE) {
       break;
     }
     recv_handle_(recv);

@@ -16,7 +16,6 @@
 #include "ps/internal/message.h"
 namespace ps {
 class Resender;
-class PBMeta;
 /**
  * \brief Van sends messages to remote nodes
  *
@@ -54,7 +53,7 @@ class Van {
    * \brief send a message, It is thread-safe
    * \return the number of bytes sent. -1 if failed
    */
-  int Send(const Message &msg);
+  int Send(Message &msg);
 
   /**
    * \brief return my node
@@ -104,17 +103,17 @@ class Van {
    * \brief send a mesage
    * \return the number of bytes sent
    */
-  virtual int SendMsg(const Message &msg) = 0;
+  virtual int SendMsg(Message &msg) = 0;
+
+  /**
+   * \brief get the length of pack meta
+   */
+  int GetPackMetaLen(const Meta &meta);
 
   /**
    * \brief pack meta into a string
    */
   void PackMeta(const Meta &meta, char **meta_buf, int *buf_size);
-
-  /**
-   * \brief pack meta into protobuf
-   */
-  void PackMetaPB(const Meta &meta, PBMeta *pb);
 
   /**
    * \brief unpack meta from a string
