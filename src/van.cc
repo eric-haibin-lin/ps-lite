@@ -17,8 +17,7 @@
 #include "./meta.pb.h"
 #include "./network_utils.h"
 #include "./rdma_van.h"
-//#include "./libfabric_van.h"
-#include "./zmq_conn_van.h"
+#include "./fabric_van.h"
 #include "./resender.h"
 #include "./zmq_van.h"
 #define USE_PROFILING
@@ -80,9 +79,7 @@ Van *Van::Create(const std::string &type) {
 #endif
 #ifdef DMLC_USE_FABRIC
   } else if (type == "fabric") {
-    return new FabricVan2();
-  } else if (type == "fabric2") {
-    return new FabricVan2();
+    return new FabricVan();
 #endif
   } else {
     LOG(FATAL) << "unsupported van type: " << type;
@@ -367,8 +364,10 @@ void Van::Start(int customer_id) {
 
     // connect to the scheduler
     Connect(scheduler_);
-    LOG(INFO) << "ABOUT TO SPIN";
-    while (true) ;
+    if (GetEnv("DMLC_EFA_DEBUG", 0)) {
+      LOG(INFO) << "ABOUT TO SPIN";
+      while (true) ;
+    }
 
     // for debug use
     if (Environment::Get()->find("PS_DROP_MSG")) {
@@ -391,8 +390,10 @@ void Van::Start(int customer_id) {
     msg.meta.timestamp = timestamp_++;
     Send(msg);
   }
-  LOG(INFO) << "ABOUT TO SPIN";
-  while (true) ;
+  if (GetEnv("DMLC_EFA_DEBUG", 0)) {
+    LOG(INFO) << "ABOUT TO SPIN";
+    while (true) ;
+  }
 
   // wait until ready
   while (!ready_.load()) {

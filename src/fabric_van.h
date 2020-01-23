@@ -1,8 +1,8 @@
 /**
  *  Copyright (c) 2015 by Contributors
  */
-#ifndef PS_FABRIC_VAN2_H_
-#define PS_FABRIC_VAN2_H_
+#ifndef PS_FABRIC_VAN_H_
+#define PS_FABRIC_VAN_H_
 #include <stdio.h>
 #include <cstdlib>
 #include <zmq.h>
@@ -67,12 +67,6 @@
 #include <rdma/fi_tagged.h>
 
 namespace ps {
-
-struct ZmqBufferContext2 { // for clarity, don't merge meta and data
-  int sender;
-  zmq_msg_t* meta_zmsg;
-  std::vector<zmq_msg_t*> data_zmsg;
-};
 
 #define NCCL_OFI_MAX_REQUESTS  256
 
@@ -583,12 +577,12 @@ exit:
 /**
  * \brief ZMQ based implementation
  */
-class FabricVan2 : public Van {
+class FabricVan : public Van {
 
 
  public:
-  FabricVan2() {}
-  virtual ~FabricVan2() {}
+  FabricVan() {}
+  virtual ~FabricVan() {}
 
  protected:
   void Start(int customer_id) override {
@@ -1047,7 +1041,7 @@ class FabricVan2 : public Van {
     } else {
       BootstrapNonScheduler(node, my_port);
     }
-    //auto t = new std::thread(&FabricVan2::OfiAcceptThread, this);
+    //auto t = new std::thread(&FabricVan::OfiAcceptThread, this);
     //thread_list_.push_back(t);
     return my_port;
   }
@@ -1259,7 +1253,7 @@ class FabricVan2 : public Van {
       }
     }
     std::lock_guard<std::mutex> lk(mu_);
-    auto t = new std::thread(&FabricVan2::ZmqRecvThread, this, (void*) receiver_);
+    auto t = new std::thread(&FabricVan::ZmqRecvThread, this, (void*) receiver_);
     thread_list_.push_back(t);
     LOG(INFO) << node.hostname << " bound to port " << port;
     return port;
@@ -1292,7 +1286,7 @@ class FabricVan2 : public Van {
       zmq_setsockopt(sender, ZMQ_IDENTITY, my_id.data(), my_id.size());
       std::lock_guard<std::mutex> lk(mu_);
       if (is_worker_ && (senders_.find(id)==senders_.end())) {
-        auto t = new std::thread(&FabricVan2::ZmqRecvThread, this, (void*) sender);
+        auto t = new std::thread(&FabricVan::ZmqRecvThread, this, (void*) sender);
         thread_list_.push_back(t);
       }
     }
@@ -1465,7 +1459,7 @@ class FabricVan2 : public Van {
   int ZmqRecvMsg(Message* msg) {
     msg->data.clear();
 
-    ZmqBufferContext2 notification;
+    ZmqBufferContext notification;
     recv_buffers_.WaitAndPop(&notification);
 
     size_t recv_bytes = 0;
@@ -1517,7 +1511,7 @@ class FabricVan2 : public Van {
     LOG(INFO) << "Start ZMQ recv thread";
 
     while (true) {
-      ZmqBufferContext2 *buf_ctx = new ZmqBufferContext2();
+      ZmqBufferContext *buf_ctx = new ZmqBufferContext();
 
       for (int i = 0;; ++i) {
         zmq_msg_t* zmsg = new zmq_msg_t;
@@ -1619,7 +1613,7 @@ class FabricVan2 : public Van {
   bool is_worker_;
 
   // Recv buffer queue
-  ThreadsafeQueue<ZmqBufferContext2> recv_buffers_;
+  ThreadsafeQueue<ZmqBufferContext> recv_buffers_;
 
   std::atomic<bool> should_stop_{false};
 
@@ -1661,4 +1655,4 @@ class FabricVan2 : public Van {
 };
 }  // namespace ps
 
-#endif  // PS_FABRIC_VAN2_H_
+#endif  // PS_FABRIC_VAN_H_
