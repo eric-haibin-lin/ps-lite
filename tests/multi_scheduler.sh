@@ -1,0 +1,1 @@
+bash ./run_benchmark_scheduler.sh 3 3 
