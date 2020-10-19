@@ -32,6 +32,8 @@ class Postoffice {
    * \param do_barrier whether to block until every nodes are started.
    */
   void Start(int customer_id, const char* argv0, const bool do_barrier);
+  
+  void StartParsingRank(int customer_id, int rank, const char* argv0, const bool do_barrier);
   /**
    * \brief terminate the system
    *
@@ -175,6 +177,9 @@ class Postoffice {
   std::vector<Range> server_key_ranges_;
   bool is_worker_, is_server_, is_scheduler_;
   int num_servers_, num_workers_;
+
+  //RANK for van to use
+  int _rank;
   std::unordered_map<int, std::unordered_map<int, bool> > barrier_done_;
   int verbose_;
   std::mutex barrier_mu_;

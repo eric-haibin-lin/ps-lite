@@ -227,8 +227,8 @@ void Van::ProcessAddNodeCommandAtScheduler(Message *msg, Meta *nodes, Meta *reco
         int id;
         if(Environment::Get()->find("ENABLE_PYTORCH_RANK") && atoi(Environment::Get()->find("ENABLE_PYTORCH_RANK"))==1){   
           //CHECK_NOTNULL(node.aux_id);
-          id = node.role == Node::SERVER ? Postoffice::ServerRankToID(node.aux_id)
-                                           : Postoffice::WorkerRankToID(node.aux_id);
+          id = node.role == Node::SERVER ? Postoffice::ServerRankToID(Postoffice::Get()->_rank)
+                                           : Postoffice::WorkerRankToID(Postoffice::Get()->_rank);
         }else{
           id = node.role == Node::SERVER ? Postoffice::ServerRankToID(num_servers_)
                                            : Postoffice::WorkerRankToID(num_workers_);
@@ -243,8 +243,8 @@ void Van::ProcessAddNodeCommandAtScheduler(Message *msg, Meta *nodes, Meta *reco
         //using RANK parsing from pytorch as rank instead of index of sorted hosts
         if(Environment::Get()->find("ENABLE_PYTORCH_RANK") && atoi(Environment::Get()->find("ENABLE_PYTORCH_RANK"))==1){   
           //CHECK_NOTNULL(node.aux_id);
-          id = node.role == Node::SERVER ? Postoffice::ServerRankToID(node.aux_id)
-                                           : Postoffice::WorkerRankToID(node.aux_id);
+          id = node.role == Node::SERVER ? Postoffice::ServerRankToID(Postoffice::Get()->_rank)
+                                           : Postoffice::WorkerRankToID(Postoffice::Get()->_rank);
         }else{
           id = node.role == Node::SERVER ? Postoffice::ServerRankToID(num_servers_)
                                            : Postoffice::WorkerRankToID(num_workers_);
