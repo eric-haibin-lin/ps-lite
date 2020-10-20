@@ -128,6 +128,8 @@ class Postoffice {
    * servers. This function is available only after \ref Start has been called.
    */
   int my_rank() const { return IDtoRank(van_->my_node().id); }
+
+  int get_rank() const {return _rank;}
   /** \brief Returns true if this node is a worker node */
   int is_worker() const { return is_worker_; }
   /** \brief Returns true if this node is a server node. */

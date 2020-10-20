@@ -227,8 +227,8 @@ void Van::ProcessAddNodeCommandAtScheduler(Message *msg, Meta *nodes, Meta *reco
         int id;
         if(Environment::Get()->find("ENABLE_PYTORCH_RANK") && atoi(Environment::Get()->find("ENABLE_PYTORCH_RANK"))==1){   
           //CHECK_NOTNULL(node.aux_id);
-          id = node.role == Node::SERVER ? Postoffice::ServerRankToID(Postoffice::Get()->_rank)
-                                           : Postoffice::WorkerRankToID(Postoffice::Get()->_rank);
+          id = node.role == Node::SERVER ? Postoffice::ServerRankToID(node.aux_id)
+                                           : Postoffice::WorkerRankToID(node.aux_id);
         }else{
           id = node.role == Node::SERVER ? Postoffice::ServerRankToID(num_servers_)
                                            : Postoffice::WorkerRankToID(num_workers_);
@@ -243,8 +243,8 @@ void Van::ProcessAddNodeCommandAtScheduler(Message *msg, Meta *nodes, Meta *reco
         //using RANK parsing from pytorch as rank instead of index of sorted hosts
         if(Environment::Get()->find("ENABLE_PYTORCH_RANK") && atoi(Environment::Get()->find("ENABLE_PYTORCH_RANK"))==1){   
           //CHECK_NOTNULL(node.aux_id);
-          id = node.role == Node::SERVER ? Postoffice::ServerRankToID(Postoffice::Get()->_rank)
-                                           : Postoffice::WorkerRankToID(Postoffice::Get()->_rank);
+          id = node.role == Node::SERVER ? Postoffice::ServerRankToID(node.aux_id)
+                                           : Postoffice::WorkerRankToID(node.aux_id);
         }else{
           id = node.role == Node::SERVER ? Postoffice::ServerRankToID(num_servers_)
                                            : Postoffice::WorkerRankToID(num_workers_);
@@ -516,9 +516,9 @@ void Van::Start(int customer_id, bool standalone) {
     Node customer_specific_node = my_node_;
     //using aux_id as RANK parsing from pytorch 
     //temp(read from environment variable)
-    if(Environment::Get()->find("RANK")!=nullptr && Environment::Get()->find("ENABLE_PYTORCH_RANK") 
+    if(Environment::Get()->find("ENABLE_PYTORCH_RANK") 
                                                  && atoi(Environment::Get()->find("ENABLE_PYTORCH_RANK"))==1){
-      customer_specific_node.aux_id = atoi(Environment::Get()->find("RANK"));
+      customer_specific_node.aux_id = Postoffice::Get()->get_rank();
     }
 
     customer_specific_node.customer_id = customer_id;
