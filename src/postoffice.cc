@@ -90,57 +90,9 @@ void Postoffice::Start(int customer_id, const char* argv0, const bool do_barrier
 }
 
 void Postoffice::StartParsingRank(int customer_id, int rank, const char* argv0, const bool do_barrier) {
-  start_mu_.lock();
   //regist rank
   _rank = rank;
-  if (init_stage_ == 0) {
-    InitEnvironment();
-    // init glog
-    if (argv0) {
-      dmlc::InitLogging(argv0);
-    } else {
-      dmlc::InitLogging("ps-lite\0");
-    }
-
-    // init node info.
-    for (int i = 0; i < num_workers_; ++i) {
-      int id = WorkerRankToID(i);
-      for (int g : {id, kWorkerGroup, kWorkerGroup + kServerGroup,
-                    kWorkerGroup + kScheduler,
-                    kWorkerGroup + kServerGroup + kScheduler}) {
-        node_ids_[g].push_back(id);
-      }
-    }
-
-    for (int i = 0; i < num_servers_; ++i) {
-      int id = ServerRankToID(i);
-      for (int g : {id, kServerGroup, kWorkerGroup + kServerGroup,
-                    kServerGroup + kScheduler,
-                    kWorkerGroup + kServerGroup + kScheduler}) {
-        node_ids_[g].push_back(id);
-      }
-    }
-
-    for (int g : {kScheduler, kScheduler + kServerGroup + kWorkerGroup,
-                  kScheduler + kWorkerGroup, kScheduler + kServerGroup}) {
-      node_ids_[g].push_back(kScheduler);
-    }
-    init_stage_++;
-  }
-  start_mu_.unlock();
-
-  // start van
-  van_->Start(customer_id, false);
-
-  start_mu_.lock();
-  if (init_stage_ == 1) {
-    // record start time
-    start_time_ = time(NULL);
-    init_stage_++;
-  }
-  start_mu_.unlock();
-  // do a barrier here
-  if (do_barrier) Barrier(customer_id, kWorkerGroup + kServerGroup + kScheduler);
+  Postoffice::Start(customer_id, argv0, do_barrier);
 }
 
 
