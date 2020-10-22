@@ -174,7 +174,7 @@ void Van::ProcessAddNodeCommandAtScheduler(Message *msg, Meta *nodes, Meta *reco
                 });
     } else {
       // sort the nodes according their ip and port
-      // no need to sort for p2p communication case
+      // no need to sort for p2p communication case, but sort might good for latter usage
       std::sort(nodes->control.node.begin(), nodes->control.node.end(),
                [](const Node &a, const Node &b) {
                  return (a.hostname.compare(b.hostname) | (a.port < b.port)) > 0;
@@ -184,7 +184,8 @@ void Van::ProcessAddNodeCommandAtScheduler(Message *msg, Meta *nodes, Meta *reco
     //make sure RANK all continousloy starting from 0 to num_servers and num_worker.
     //woker and server count it seperately 
     //ordered set to test whether it is continous
-    if(Environment::Get()->find("ENABLE_PYTORCH_RANK") && atoi(Environment::Get()->find("ENABLE_PYTORCH_RANK"))==1){ 
+    if(Environment::Get()->find("ENABLE_GLOBAL_RANK") 
+                            && atoi(Environment::Get()->find("ENABLE_GLOBAL_RANK"))==1){ 
       std::set<int> servers_rank_set;
       std::set<int> workers_rank_set;
       for (auto &node: nodes->control.node){
@@ -225,7 +226,8 @@ void Van::ProcessAddNodeCommandAtScheduler(Message *msg, Meta *nodes, Meta *reco
         CHECK_EQ(node.id, Node::kEmpty);
         //using RANK parsing from pytorch as rank instead of index of sorted hosts
         int id;
-        if(Environment::Get()->find("ENABLE_PYTORCH_RANK") && atoi(Environment::Get()->find("ENABLE_PYTORCH_RANK"))==1){   
+        if(Environment::Get()->find("ENABLE_GLOBAL_RANK") 
+                                    && atoi(Environment::Get()->find("ENABLE_GLOBAL_RANK"))==1){   
           //CHECK_NOTNULL(node.aux_id);
           id = node.role == Node::SERVER ? Postoffice::ServerRankToID(node.aux_id)
                                            : Postoffice::WorkerRankToID(node.aux_id);
@@ -241,7 +243,8 @@ void Van::ProcessAddNodeCommandAtScheduler(Message *msg, Meta *nodes, Meta *reco
       } else {
         int id;
         //using RANK parsing from pytorch as rank instead of index of sorted hosts
-        if(Environment::Get()->find("ENABLE_PYTORCH_RANK") && atoi(Environment::Get()->find("ENABLE_PYTORCH_RANK"))==1){   
+        if(Environment::Get()->find("ENABLE_GLOBAL_RANK") 
+                                    && atoi(Environment::Get()->find("ENABLE_GLOBAL_RANK"))==1){   
           //CHECK_NOTNULL(node.aux_id);
           id = node.role == Node::SERVER ? Postoffice::ServerRankToID(node.aux_id)
                                            : Postoffice::WorkerRankToID(node.aux_id);
@@ -515,10 +518,12 @@ void Van::Start(int customer_id, bool standalone) {
     Message msg;
     Node customer_specific_node = my_node_;
     //using aux_id as RANK parsing from pytorch 
-    //temp(read from environment variable)
-    if(Environment::Get()->find("ENABLE_PYTORCH_RANK") 
-                                                 && atoi(Environment::Get()->find("ENABLE_PYTORCH_RANK"))==1){
-      customer_specific_node.aux_id = Postoffice::Get()->get_rank();
+    //get global rank from postoffice, because global only passed to postoffice layer.
+    //aux_id carries global rank, and aux_id will be send to scheduler to gather 
+    //and scatter to all servers and workers.
+    if(Environment::Get()->find("ENABLE_GLOBAL_RANK") 
+                                                 && atoi(Environment::Get()->find("ENABLE_GLOBAL_RANK"))==1){
+      customer_specific_node.aux_id = Postoffice::Get()->get_global_rank();
     }
 
     customer_specific_node.customer_id = customer_id;

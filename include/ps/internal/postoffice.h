@@ -33,7 +33,7 @@ class Postoffice {
    */
   void Start(int customer_id, const char* argv0, const bool do_barrier);
   
-  void StartParsingRank(int customer_id, int rank, const char* argv0, const bool do_barrier);
+  void StartWithGlobalRank(int customer_id, int global_rank, const char* argv0, const bool do_barrier);
   /**
    * \brief terminate the system
    *
@@ -129,7 +129,7 @@ class Postoffice {
    */
   int my_rank() const { return IDtoRank(van_->my_node().id); }
 
-  int get_rank() const {return _rank;}
+  int get_global_rank() const {return global_rank_;}
   /** \brief Returns true if this node is a worker node */
   int is_worker() const { return is_worker_; }
   /** \brief Returns true if this node is a server node. */
@@ -181,7 +181,7 @@ class Postoffice {
   int num_servers_, num_workers_;
 
   //RANK for van to use
-  int _rank;
+  int global_rank_;
   std::unordered_map<int, std::unordered_map<int, bool> > barrier_done_;
   int verbose_;
   std::mutex barrier_mu_;

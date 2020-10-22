@@ -47,8 +47,8 @@ inline void StartAsync(int customer_id, const char *argv0 = nullptr) {
   Postoffice::Get()->Start(customer_id, argv0, false);
 }
 
-inline void StartAsyncParsingRank(int customer_id, int rank, const char *argv0 = nullptr) {
-  Postoffice::Get()->StartParsingRank(customer_id, rank, argv0, false);
+inline void StartAsyncWithGlobalRank(int customer_id, int global_rank, const char *argv0 = nullptr) {
+  Postoffice::Get()->StartWithGlobalRank(customer_id, global_rank, argv0, false);
 }
 
 /**

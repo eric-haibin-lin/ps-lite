@@ -283,8 +283,8 @@ int main(int argc, char *argv[]) {
   setenv("ENABLE_SERVER_MULTIPULL", "0", 1);
   // start system
   //Start(0);
-  if(getenv("RANK")!=nullptr){
-    StartAsyncParsingRank(0,atoi(getenv("RANK")));
+  if(getenv("GLOBAL_RANK")!=nullptr){
+    StartAsyncWithGlobalRank(0,atoi(getenv("GLOBAL_RANK")));
   }else{
     Start(0);
   }

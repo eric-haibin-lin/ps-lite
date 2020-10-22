@@ -1,1 +1,1 @@
-bash ./run_benchmark_scheduler.sh 3 3 
+bash ./run_benchmark_scheduler_provide_rank.sh 3 3 
