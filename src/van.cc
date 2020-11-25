@@ -181,11 +181,13 @@ void Van::ProcessAddNodeCommandAtScheduler(Message *msg, Meta *nodes, Meta *reco
                });
     }
 
-    //make sure RANK all continousloy starting from 0 to num_servers and num_worker.
-    //woker and server count it seperately 
-    //ordered set to test whether it is continous
-    if(Environment::Get()->find("ENABLE_GLOBAL_RANK") 
-                            && atoi(Environment::Get()->find("ENABLE_GLOBAL_RANK"))==1){ 
+    // make sure RANK all continousloy starting from 0 to num_servers and num_worker.
+    // woker and server count it seperately 
+    // ordered set to test whether it is continous
+    bool enable_global_rank = false;
+    if (Environment::Get()->find("ENABLE_GLOBAL_RANK") &&
+        atoi(Environment::Get()->find("ENABLE_GLOBAL_RANK")) == 1) { 
+      enable_global_rank = true;
       std::set<int> servers_rank_set;
       std::set<int> workers_rank_set;
       for (auto &node: nodes->control.node){
@@ -205,7 +207,9 @@ void Van::ProcessAddNodeCommandAtScheduler(Message *msg, Meta *nodes, Meta *reco
       int _num_servers = Postoffice::Get()->num_servers();
       int continous_incre = 0;
       for(auto it=servers_rank_set.begin(); it!=servers_rank_set.end(); ++it){
-        CHECK_EQ(*it,continous_incre++)<<"self provided server rank must be continous and start from 0";
+        CHECK_EQ(*it, continous_incre) << "self provided server rank must be continous and start from 0. "
+          << *it << " v.s. " << continous_incre;
+        continous_incre++;
       }
       CHECK_EQ(continous_incre,_num_servers)<<"highest server rank must equal to (num_server - 1)";
 
@@ -226,12 +230,11 @@ void Van::ProcessAddNodeCommandAtScheduler(Message *msg, Meta *nodes, Meta *reco
         CHECK_EQ(node.id, Node::kEmpty);
         //using RANK parsing from pytorch as rank instead of index of sorted hosts
         int id;
-        if(Environment::Get()->find("ENABLE_GLOBAL_RANK") 
-                                    && atoi(Environment::Get()->find("ENABLE_GLOBAL_RANK"))==1){   
+        if (enable_global_rank) {
           //CHECK_NOTNULL(node.aux_id);
           id = node.role == Node::SERVER ? Postoffice::ServerRankToID(node.aux_id)
                                            : Postoffice::WorkerRankToID(node.aux_id);
-        }else{
+        } else {
           id = node.role == Node::SERVER ? Postoffice::ServerRankToID(num_servers_)
                                            : Postoffice::WorkerRankToID(num_workers_);
         }
@@ -243,12 +246,11 @@ void Van::ProcessAddNodeCommandAtScheduler(Message *msg, Meta *nodes, Meta *reco
       } else {
         int id;
         //using RANK parsing from pytorch as rank instead of index of sorted hosts
-        if(Environment::Get()->find("ENABLE_GLOBAL_RANK") 
-                                    && atoi(Environment::Get()->find("ENABLE_GLOBAL_RANK"))==1){   
+        if (enable_global_rank) {
           //CHECK_NOTNULL(node.aux_id);
           id = node.role == Node::SERVER ? Postoffice::ServerRankToID(node.aux_id)
                                            : Postoffice::WorkerRankToID(node.aux_id);
-        }else{
+        } else{
           id = node.role == Node::SERVER ? Postoffice::ServerRankToID(num_servers_)
                                            : Postoffice::WorkerRankToID(num_workers_);
         }
@@ -270,7 +272,7 @@ void Van::ProcessAddNodeCommandAtScheduler(Message *msg, Meta *nodes, Meta *reco
         Send(back);
       }
     }
-    PS_VLOG(1) << "the scheduler is connected to " << num_workers_ << " workers and "
+    PS_VLOG(1) << "The scheduler is connected to " << num_workers_ << " workers and "
                << num_servers_ << " servers";
     ready_ = true;
   } else if (!recovery_nodes->control.node.empty()) {
@@ -293,6 +295,8 @@ void Van::ProcessAddNodeCommandAtScheduler(Message *msg, Meta *nodes, Meta *reco
       back.meta.timestamp = timestamp_++;
       Send(back);
     }
+  } else {
+    PS_VLOG(2) << "AddNode: " << nodes->control.node.size() << " / " << num_nodes;
   }
 }
 
