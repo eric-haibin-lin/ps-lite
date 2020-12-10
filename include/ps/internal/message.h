@@ -7,6 +7,7 @@
 #include <limits>
 #include <string>
 #include <sstream>
+#include <array>
 #include "ps/sarray.h"
 namespace ps {
 /** \brief data type */
@@ -15,12 +16,14 @@ enum DataType {
   UINT8, UINT16, UINT32, UINT64,
   FLOAT, DOUBLE, OTHER
 };
+
 /** \brief data type name */
 static const char* DataTypeName[] = {
   "CHAR", "INT8", "INT16", "INT32", "INT64",
   "UINT8", "UINT16", "UINT32", "UINT64",
   "FLOAT", "DOUBLE", "OTHER"
 };
+
 /**
  * \brief compare if V and W are the same type
  */
@@ -98,7 +101,11 @@ struct Node {
   int customer_id;
   /** \brief hostname or ip */
   std::string hostname;
+  /** \brief number of ports */
+  uint8_t num_ports;
   /** \brief the port this node is binding */
+  std::array<int, 32> ports;
+  /** \brief the same port as ports[0] */
   int port;
   /** \brief whether this node is created by failover */
   bool is_recovery;
@@ -245,7 +252,11 @@ struct Message {
     ss << meta.DebugString();
     if (data.size()) {
       ss << " Body:";
-      for (const auto& d : data) ss << " data_size=" << d.size();
+      for (const auto& d : data) {
+        ss << " data_size=" << d.size() << " "
+           << DeviceTypeName[d.src_device_type_] << "[" << d.src_device_id_ << "]->"
+           << DeviceTypeName[d.dst_device_type_] << "[" << d.dst_device_id_ << "]";
+      }
     }
     return ss.str();
   }

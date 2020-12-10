@@ -394,17 +394,19 @@ void Van::Start(int customer_id, bool standalone) {
   start_mu_.lock();
   if (init_stage == 0) {
     scheduler_.hostname = std::string(CHECK_NOTNULL(Environment::Get()->find("DMLC_PS_ROOT_URI")));
+    scheduler_.num_ports = 1;
     scheduler_.port = atoi(CHECK_NOTNULL(Environment::Get()->find("DMLC_PS_ROOT_PORT")));
+    scheduler_.ports[0] = scheduler_.port;
     scheduler_.role = Node::SCHEDULER;
     scheduler_.id = kScheduler;
     is_scheduler_ = Postoffice::Get()->is_scheduler();
-
 
     // get my node info
     if (is_scheduler_) {
       SetNode(scheduler_);
     } else {
       auto role = Postoffice::Get()->is_worker() ? Node::WORKER : Node::SERVER;
+      // host
       const char *nhost = Environment::Get()->find("DMLC_NODE_HOST");
       std::string ip;
       if (nhost) ip = std::string(nhost);
@@ -419,16 +421,25 @@ void Van::Start(int customer_id, bool standalone) {
         }
         CHECK(!interface.empty()) << "failed to get the interface";
       }
-      int port = GetAvailablePort();
-      const char *pstr = Environment::Get()->find("PORT");
-      if (pstr) port = atoi(pstr);
-      CHECK(!ip.empty()) << "failed to get ip";
-      CHECK(port) << "failed to get a port";
-      Node node = my_node_;
+      // num_ports
+      const char *npstr = Environment::Get()->find("DMLC_NUM_PORTS");
+      int num_ports = 1;
+      if (npstr) num_ports = atoi(npstr);
+      // ports
+      std::array<int, 32> ports;
+      int num_available_ports = GetAvailablePort(num_ports, &ports);
 
+      const char *pstr = Environment::Get()->find("PORT");
+      if (pstr) ports[0] = atoi(pstr);
+      CHECK(!ip.empty()) << "failed to get ip";
+      CHECK_EQ(num_available_ports, num_ports) << "failed to get "
+                                               << num_ports << " ports";
+      Node node = my_node_;
       node.hostname = ip;
       node.role = role;
-      node.port = port;
+      node.num_ports = num_ports;
+      node.ports = ports;
+      node.port = ports[0];
       // cannot determine my id now, the scheduler will assign it later
       // set it explicitly to make re-register within a same process possible
       node.id = Node::kEmpty;

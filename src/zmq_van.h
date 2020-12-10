@@ -96,6 +96,8 @@ class ZMQVan : public Van {
   }
 
   int Bind(const Node& node, int max_retry) override {
+    CHECK_EQ(my_node_.num_ports, 1)
+      << "zmq van does not support multiple ports";
     receiver_ = zmq_socket(context_, ZMQ_ROUTER);
     int option = 1;
     CHECK(!zmq_setsockopt(receiver_, ZMQ_ROUTER_MANDATORY, &option, sizeof(option)))
