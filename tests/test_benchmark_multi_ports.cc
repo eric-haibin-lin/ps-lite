@@ -185,6 +185,10 @@ void RunWorker(int argc, char *argv[]) {
   auto v = Environment::Get()->find("NUM_KEY_PER_SERVER");
   const int how_many_key_per_server = v ? atoi(v) : 40;
   const int total_key_num = num_servers * how_many_key_per_server;
+  int num_ports = 1;
+  const char *npstr = Environment::Get()->find("DMLC_NUM_PORTS");
+  if (npstr) num_ports = atoi(npstr);
+  LOG(INFO) << num_ports << " ports per node";
 
   std::vector<SArray<char> > server_vals;
   std::vector<SArray<Key> > server_keys;
@@ -193,7 +197,8 @@ void RunWorker(int argc, char *argv[]) {
     void* ptr;
     aligned_memory_alloc(&ptr, len);
     SArray<char> vals;
-    vals.reset((char*) ptr, len * sizeof(char), [](void *){});
+    vals.reset((char*) ptr, len * sizeof(char), [](void *){},
+               CPU, key % 2, CPU, key % 2);
     server_vals.push_back(vals);
   }
 
@@ -274,8 +279,6 @@ void RunWorker(int argc, char *argv[]) {
     default:
       CHECK(0) << "unknown mode " << mode;
   }
-
-
 }
 
 int main(int argc, char *argv[]) {

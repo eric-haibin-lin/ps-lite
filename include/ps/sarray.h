@@ -129,16 +129,14 @@ class SArray {
          DeviceType dst_device_type, int dst_device_id, bool deletable = false) {
     if (deletable) {
       CHECK(src_device_type == CPU);
-      reset(data, size, [](V* data){
-        delete [] data; 
-      });
+      reset(data, size, [](V* data){ delete [] data; }, 
+           src_device_type, src_device_id,
+           dst_device_type, dst_device_id);
     } else {
-      reset(data, size, [](V* data) { });
+      reset(data, size, [](V* data) { },
+            src_device_type, src_device_id,
+            dst_device_type, dst_device_id);
     }
-    src_device_type_ = src_device_type;
-    src_device_id_ = src_device_id;
-    dst_device_type_ = dst_device_type;
-    dst_device_id_ = dst_device_id;
   }
 
   /**
@@ -202,8 +200,14 @@ class SArray {
    * @brief Reset the current data pointer with a deleter
    */
   template <typename Deleter>
-  void reset(V* data, size_t size, Deleter del) {
+  void reset(V* data, size_t size, Deleter del,
+             DeviceType src_device_type=CPU, int src_device_id=0,
+             DeviceType dst_device_type=CPU, int dst_device_id=0) {
     size_ = size; capacity_ = size; ptr_.reset(data, del);
+    src_device_type_ = src_device_type;
+    src_device_id_ = src_device_id;
+    dst_device_type_ = dst_device_type;
+    dst_device_id_ = dst_device_id;
   }
 
   /**
@@ -293,9 +297,20 @@ class SArray {
     ret.ptr_ = std::shared_ptr<V>(ptr_, data() + begin);
     ret.size_ = end - begin;
     ret.capacity_ = end - begin;
+    ret.src_device_type_ = src_device_type_;
+    ret.src_device_id_ = src_device_id_;
+    ret.dst_device_type_ = dst_device_type_;
+    ret.dst_device_id_ = dst_device_id_;
     return ret;
   }
 
+  std::string DebugString() const {
+    std::stringstream ss;
+    ss << " data_size=" << size() << " "
+       << DeviceTypeName[src_device_type_] << "[" << src_device_id_ << "]->"
+       << DeviceTypeName[dst_device_type_] << "[" << dst_device_id_ << "]";
+    return ss.str();
+  }
  private:
   size_t size_ = 0;
   size_t capacity_ = 0;

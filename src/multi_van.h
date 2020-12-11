@@ -56,11 +56,7 @@ public:
 
 class MultiVan : public Van {
  public:
-  MultiVan() {
-    num_ports_ = 1;
-    const char *npstr = Environment::Get()->find("DMLC_NUM_PORTS");
-    if (npstr) num_ports_ = atoi(npstr);
-  }
+  MultiVan() { }
 
   ~MultiVan() { PS_VLOG(1) << "~MultiVan"; }
 
@@ -78,6 +74,12 @@ class MultiVan : public Van {
     std::string role(val);
     LOG(INFO) << "This is a " << role;
     start_mu_.unlock();
+
+    // only 1 port needed for the scheduler
+    is_scheduler_ = "scheduler" == role;
+    num_ports_ = 1;
+    const char *npstr = Environment::Get()->find("DMLC_NUM_PORTS");
+    if (npstr && !is_scheduler_) num_ports_ = atoi(npstr);
 
     // van creation
     for (int i = 0; i < num_ports_; ++i) {
@@ -242,7 +244,7 @@ class MultiVan : public Van {
 
   std::vector<Van*> vans_;
 
-  bool is_worker_;
+  bool is_scheduler_;
   int num_ports_;
   std::vector<Node> my_nodes_;
 
