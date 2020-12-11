@@ -76,7 +76,7 @@ struct Node {
     ss << "[role=" << (role == SERVER ? "server" : (role == WORKER ? "worker" : "scheduler"))
        << (id != kEmpty ? ", id=" + std::to_string(id) : "")
        << ", ip=" << hostname << ", port=" << port << ", is_recovery=" << is_recovery
-       << ", aux_id=" << aux_id;
+       << ", aux_id=" << aux_id << ", num_ports=" << num_ports;
     if (endpoint_name_len > 0) {
       ss << ", endpoint_name_len=" << endpoint_name_len << ", endpoint_name={";
       for (size_t i = 0; i < endpoint_name_len; i++) {
@@ -102,7 +102,7 @@ struct Node {
   /** \brief hostname or ip */
   std::string hostname;
   /** \brief number of ports */
-  uint8_t num_ports;
+  int num_ports;
   /** \brief the port this node is binding */
   std::array<int, 32> ports;
   /** \brief the same port as ports[0] */

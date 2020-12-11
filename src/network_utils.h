@@ -224,13 +224,13 @@ void GetAvailableInterfaceAndIP(
  * \return 0 on failure
  */
 int GetAvailablePort(int num_ports, std::array<int, 32>* ports) {
-  struct sockaddr_in addr;
-  addr.sin_port = htons(0);  // have system pick up a random port available for me
-  addr.sin_family = AF_INET;  // IPV4
-  addr.sin_addr.s_addr = htonl(INADDR_ANY);  // set our addr to any interface
   int socks[32];
   int num_available_ports = 0;
   for (int i = 0; i < num_ports; ++i) {
+    struct sockaddr_in addr;
+    addr.sin_port = htons(0);  // have system pick up a random port available for me
+    addr.sin_family = AF_INET;  // IPV4
+    addr.sin_addr.s_addr = htonl(INADDR_ANY);  // set our addr to any interface
     int sock = socket(AF_INET, SOCK_STREAM, 0);
     if (0 != bind(sock, (struct sockaddr*)&addr, sizeof(struct sockaddr_in))) {
       perror("bind():");

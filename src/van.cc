@@ -23,6 +23,7 @@
 
 #include "./resender.h"
 #include "./zmq_van.h"
+#include "./multi_van.h"
 #include "./ucx_van.h"
 #define USE_PROFILING
 
@@ -74,8 +75,10 @@ Van *Van::Create(const std::string &type) {
     }
   }
 #endif
-
-  if (type == "zmq" || type == "0") {
+  if (type == "multivan") {
+    return new MultiVan();
+  }
+  else if (type == "zmq" || type == "0") {
     return new ZMQVan();
 #ifdef DMLC_USE_RDMA
   } else if (type == "ibverbs") {
@@ -150,7 +153,7 @@ void Van::ProcessAddNodeCommandAtScheduler(Message *msg, Meta *nodes, Meta *reco
           << "\n an example: BYTEPS_ORDERED_HOSTS=10.0.0.1:1234,10.0.0.2:4321";
       std::string sparse_hosts = std::string(getenv("BYTEPS_ORDERED_HOSTS"));
       std::vector<std::string> hosts_list;
-      
+
       size_t pos = 0;
       while ((pos = sparse_hosts.find(",")) != std::string::npos) {
         std::string host = sparse_hosts.substr(0, pos);
@@ -640,6 +643,9 @@ void Van::PackMeta(const Meta &meta, char **meta_buf, int *buf_size) {
       raw_node[node_count].id = n.id;
       raw_node[node_count].role = n.role;
       raw_node[node_count].port = n.port;
+      raw_node[node_count].num_ports = n.num_ports;
+      bzero(raw_node[node_count].ports, 32 * sizeof(int));
+      memcpy(raw_node[node_count].ports, n.ports.data(), 32 * sizeof(int));
       bzero(raw_node[node_count].hostname, sizeof(raw_node[node_count].hostname));
       memcpy(raw_node[node_count].hostname, n.hostname.c_str(), n.hostname.size());
       bzero(raw_node[node_count].endpoint_name, sizeof(raw_node[node_count].endpoint_name));
@@ -691,6 +697,7 @@ void Van::UnpackMeta(const char *meta_buf, int buf_size, Meta *meta) {
     Node n;
     n.role = static_cast<Node::Role>(p.role);
     n.port = p.port;
+    n.num_ports = p.num_ports;
     n.hostname = p.hostname;
     n.id = p.id;
     n.is_recovery = p.is_recovery;
@@ -699,6 +706,8 @@ void Van::UnpackMeta(const char *meta_buf, int buf_size, Meta *meta) {
     n.endpoint_name_len = p.endpoint_name_len;
     bzero(n.endpoint_name, sizeof(n.endpoint_name));
     memcpy(n.endpoint_name, p.endpoint_name, sizeof(n.endpoint_name));
+    bzero(n.ports.data(), 32 * sizeof(int));
+    memcpy(n.ports.data(), p.ports, 32 * sizeof(int));
     meta->control.node.push_back(n);
   }
 

@@ -16,7 +16,11 @@ struct RawNode {
   int id;
   // hostname or ip
   char hostname[64];
-  // the port this node is binding
+  // number of ports
+  int num_ports;
+  // all the ports
+  int ports[32];
+  // the port this node is binding (ports[0])
   int port;
   // whether this node is created by failover
   bool is_recovery;

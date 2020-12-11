@@ -95,7 +95,7 @@ class ZMQVan : public Van {
     context_ = nullptr;
   }
 
-  int Bind(const Node& node, int max_retry) override {
+  int Bind(Node& node, int max_retry) override {
     CHECK_EQ(my_node_.num_ports, 1)
       << "zmq van does not support multiple ports";
     receiver_ = zmq_socket(context_, ZMQ_ROUTER);
@@ -151,6 +151,9 @@ class ZMQVan : public Van {
       PS_VLOG(1) << "Zmq skipped connection to node " << node.DebugString()
                  << ". My node is " << my_node_.DebugString();
       return;
+    } else {
+      PS_VLOG(1) << "Zmq connecting to node " << node.DebugString()
+                 << ". My node is " << my_node_.DebugString();
     }
     void* sender = zmq_socket(context_, ZMQ_DEALER);
     CHECK(sender != NULL)
