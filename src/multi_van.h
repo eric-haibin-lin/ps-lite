@@ -68,7 +68,6 @@ class MultiVan : public Van {
   void Start(int customer_id, bool standalone) override {
     start_mu_.lock();
     should_stop_ = false;
-    should_stop_polling_ = false;
 
     auto val = Environment::Get()->find("DMLC_ROLE");
     std::string role(val);
@@ -92,19 +91,29 @@ class MultiVan : public Van {
 
   void Stop() override {
     PS_VLOG(1) << "Stopping " << my_node_.ShortDebugString();
-    // stop zmq vans
-    for (auto van : vans_) {
-      van->Stop();
-    }
-
-    should_stop_ = true;
     Van::Stop();
+    
+    // send a TERMINATE message to myself
+    should_stop_ = true;
+    for (int i = 0; i < num_ports_; ++i) {
+      Message msg;
+      msg.meta.control.cmd = Control::TERMINATE;
+      msg.meta.recver = my_nodes_[i].id;
+      vans_[i]->SendMsg(msg);
+    }
 
     PS_VLOG(1) << "Stopping polling_threads_";
     for (auto& thread : polling_threads_) {
       thread->join();
       thread.reset();
     }
+
+    // stop zmq vans
+    for (auto van : vans_) {
+      van->Stop();
+    }
+
+    PS_VLOG(1) << "polling_threads_ stopped";
   }
 
   int Bind(Node& node, int max_retry) override {
@@ -219,7 +228,7 @@ class MultiVan : public Van {
 
 
   void PollingThread(int index) {
-    while (!should_stop_polling_) {
+    while (!should_stop_) {
       Message msg;
       int recv_bytes = vans_[index]->RecvMsg(&msg);
       MultiVanBufferContext ctx;
@@ -233,8 +242,6 @@ class MultiVan : public Van {
 
   // stop signals
   std::atomic<bool> should_stop_;
-  // stop signal for the non-blocking polling thread
-  std::atomic<bool> should_stop_polling_;
   std::mutex endpoints_mu_;
 
   // event thread

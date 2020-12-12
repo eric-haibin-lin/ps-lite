@@ -74,7 +74,7 @@ class ZMQVan : public Van {
 
   void Stop() override {
     PS_VLOG(1) << "Stopping " << my_node_.ShortDebugString();
-    Van::Stop();
+    if (!standalone_) Van::Stop();
     // join all threads
     should_stop_ = true;
     for (auto t : thread_list_) t->join();
@@ -226,13 +226,18 @@ class ZMQVan : public Van {
       size_t size = zmq_msg_size(zmsg);
       recv_bytes += size;
 
-
       SArray<char> data;
       // zero copy
-      data.reset(buf, size, [zmsg, size](void *) {
-        zmq_msg_close(zmsg);
-        delete zmsg;
-      });
+      data.reset(buf, size, 
+        [zmsg, size](void *) {
+          zmq_msg_close(zmsg);
+          delete zmsg;
+        },
+        msg->meta.src_dev_type.at(i),
+        msg->meta.src_dev_id.at(i),
+        msg->meta.dst_dev_type.at(i),
+        msg->meta.dst_dev_id.at(i)
+      );
       msg->data.push_back(data);
     }
 

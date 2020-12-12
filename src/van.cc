@@ -593,8 +593,14 @@ void Van::Receiving() {
 }
 
 int Van::GetPackMetaLen(const Meta &meta) {
+  auto data_type_size = meta.data_type.size() * sizeof(int);
+  auto src_dev_type_size = data_type_size;
+  auto src_dev_id_size = data_type_size;
+  auto dst_dev_type_size = data_type_size;
+  auto dst_dev_id_size = data_type_size;
   return sizeof(RawMeta) + meta.body.size() +
-         meta.data_type.size() * sizeof(int) +
+         data_type_size + src_dev_type_size + src_dev_id_size +
+         dst_dev_type_size + dst_dev_id_size +
          meta.control.node.size() * sizeof(RawNode);
 }
 
@@ -608,8 +614,13 @@ void Van::PackMeta(const Meta &meta, char **meta_buf, int *buf_size) {
   RawMeta *raw = (RawMeta*)*meta_buf;
   bzero(raw, sizeof(RawMeta));
   char *raw_body = *meta_buf + sizeof(RawMeta);
+  auto data_type_len = meta.data_type.size();
   int *raw_data_type = (int*)(raw_body + meta.body.size());
-  RawNode *raw_node = (RawNode*)(raw_data_type + meta.data_type.size());
+  int *raw_src_dev_type = raw_data_type + data_type_len;
+  int *raw_src_dev_id = raw_src_dev_type + data_type_len;
+  int *raw_dst_dev_type = raw_src_dev_id + data_type_len;
+  int *raw_dst_dev_id = raw_dst_dev_type + data_type_len;
+  RawNode *raw_node = (RawNode*)(raw_data_type + data_type_len * 5);
 
   // convert into raw buffer
   raw->head = meta.head;
@@ -629,6 +640,18 @@ void Van::PackMeta(const Meta &meta, char **meta_buf, int *buf_size) {
     data_type_count++;
   }
   raw->data_type_size = meta.data_type.size();
+  for (int i = 0; i < meta.src_dev_type.size(); ++i) {
+    raw_src_dev_type[i] = meta.src_dev_type[i];
+  }
+  for (int i = 0; i < meta.src_dev_id.size(); ++i) {
+    raw_src_dev_id[i] = meta.src_dev_id[i];
+  }
+  for (int i = 0; i < meta.dst_dev_type.size(); ++i) {
+    raw_dst_dev_type[i] = meta.dst_dev_type[i];
+  }
+  for (int i = 0; i < meta.dst_dev_id.size(); ++i) {
+    raw_dst_dev_id[i] = meta.dst_dev_id[i];
+  }
   auto ctrl = &(raw->control);
   if (!meta.control.empty()) {
     ctrl->cmd = meta.control.cmd;
@@ -672,7 +695,12 @@ void Van::UnpackMeta(const char *meta_buf, int buf_size, Meta *meta) {
   RawMeta *raw = (RawMeta*)meta_buf;
   const char *raw_body = meta_buf + sizeof(RawMeta);
   const int *raw_data_type = (const int*)(raw_body + raw->body_size);
-  const RawNode *raw_node = (RawNode*)(raw_data_type + raw->data_type_size);
+  auto data_type_len = raw->data_type_size;
+  const int *raw_src_dev_type = raw_data_type + data_type_len;
+  const int *raw_src_dev_id = raw_src_dev_type + data_type_len;
+  const int *raw_dst_dev_type = raw_src_dev_id + data_type_len;
+  const int *raw_dst_dev_id = raw_dst_dev_type + data_type_len;
+  const RawNode *raw_node = (RawNode*)(raw_data_type + data_type_len * 5);
 
   // to meta
   meta->head = raw->head;
@@ -687,7 +715,22 @@ void Van::UnpackMeta(const char *meta_buf, int buf_size, Meta *meta) {
   for (int i = 0; i < raw->data_type_size; ++i) {
     meta->data_type[i] = static_cast<DataType>(raw_data_type[i]);
   }
-
+  meta->src_dev_type.resize(raw->data_type_size);
+  for (int i = 0; i < raw->data_type_size; ++i) {
+    meta->src_dev_type[i] = static_cast<DeviceType>(raw_src_dev_type[i]);
+  }
+  meta->src_dev_id.resize(raw->data_type_size);
+  for (int i = 0; i < raw->data_type_size; ++i) {
+    meta->src_dev_id[i] = raw_src_dev_id[i];
+  }
+  meta->dst_dev_type.resize(raw->data_type_size);
+  for (int i = 0; i < raw->data_type_size; ++i) {
+    meta->dst_dev_type[i] = static_cast<DeviceType>(raw_dst_dev_type[i]);
+  }
+  meta->dst_dev_id.resize(raw->data_type_size);
+  for (int i = 0; i < raw->data_type_size; ++i) {
+    meta->dst_dev_id[i] = raw_dst_dev_id[i];
+  }
   auto ctrl = &(raw->control);
   meta->control.cmd = static_cast<Control::Command>(ctrl->cmd);
   meta->control.barrier_group = ctrl->barrier_group;
