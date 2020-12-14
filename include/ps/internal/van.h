@@ -91,7 +91,9 @@ class Van {
    * \brief bind to my node
    * do multiple retries on binding the port. since it's possible that
    * different nodes on the same machine picked the same port
-   * \return return the port binded, -1 if failed.
+   * when there are multiple ports, the method may also update `node`
+   * with the ports and device info used by the van.
+   * \return return the first port bound, -1 if failed.
    */
   virtual int Bind(Node& node, int max_retry) = 0;
 

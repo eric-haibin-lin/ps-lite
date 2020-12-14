@@ -54,6 +54,8 @@ public:
   Message msg;
 };
 
+// A van that uses multiple 0mq van under the hood. Implemented for testing purpose.
+// It supports multiple CPU devices and multiple ports.
 class MultiVan : public Van {
  public:
   MultiVan() { }
@@ -112,7 +114,6 @@ class MultiVan : public Van {
     for (auto van : vans_) {
       van->Stop();
     }
-
     PS_VLOG(1) << "polling_threads_ stopped";
   }
 
@@ -127,10 +128,16 @@ class MultiVan : public Van {
       one_node.num_ports = 1;
       one_node.ports[0] = port;
       one_node.port = node.port;
+      one_node.dev_types[i] = CPU;
+      one_node.dev_ids[i] = i;
       int bound_port = vans_[i]->Bind(one_node, max_retry);
+
+      // update node with port and device info
+      node.dev_types[i] = CPU;
+      node.dev_ids[i] = i;
       node.ports[i] = bound_port;
-      polling_threads_.emplace_back(new std::thread(&MultiVan::PollingThread, this, i));
       my_nodes_[i] = one_node;
+      polling_threads_.emplace_back(new std::thread(&MultiVan::PollingThread, this, i));
     }
     return node.ports[0];
   }
@@ -174,6 +181,8 @@ class MultiVan : public Van {
       CHECK(data.dst_device_type_ == CPU);
       src_idx = data.src_device_id_;
       dst_idx = data.dst_device_id_;
+      CHECK_EQ(my_nodes_[src_idx].dev_types[0], data.src_device_type_);
+      CHECK_EQ(my_nodes_[src_idx].dev_ids[0], data.src_device_id_);
     }
     Message van_msg = msg;
     auto van = vans_[src_idx];
@@ -203,6 +212,8 @@ class MultiVan : public Van {
       one_node.num_ports = 1;
       one_node.ports[0] = node.ports[i];
       one_node.port = node.ports[i];
+      one_node.dev_types[0] = node.dev_types[i];
+      one_node.dev_ids[0] = node.dev_ids[i];
       vans_[i]->SetNode(one_node);
       my_nodes_[i] = one_node;
     }

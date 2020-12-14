@@ -15,7 +15,7 @@ export NUM_KEY_PER_SERVER=2
 
 ROLE=$1
 if [ "$1" == "worker" ]; then
-    DMLC_ROLE=$1 ./test_benchmark_multi_ports 409600000 10 1
+    DMLC_ROLE=$1 ./test_benchmark 409600000 5 1
 else
-    DMLC_ROLE=$1 ./test_benchmark_multi_ports
+    DMLC_ROLE=$1 ./test_benchmark
 fi

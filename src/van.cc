@@ -400,6 +400,8 @@ void Van::Start(int customer_id, bool standalone) {
     scheduler_.num_ports = 1;
     scheduler_.port = atoi(CHECK_NOTNULL(Environment::Get()->find("DMLC_PS_ROOT_PORT")));
     scheduler_.ports[0] = scheduler_.port;
+    scheduler_.dev_types[0] = CPU;
+    scheduler_.dev_ids[0] = 0;
     scheduler_.role = Node::SCHEDULER;
     scheduler_.id = kScheduler;
     is_scheduler_ = Postoffice::Get()->is_scheduler();
@@ -640,16 +642,16 @@ void Van::PackMeta(const Meta &meta, char **meta_buf, int *buf_size) {
     data_type_count++;
   }
   raw->data_type_size = meta.data_type.size();
-  for (int i = 0; i < meta.src_dev_type.size(); ++i) {
+  for (size_t i = 0; i < meta.src_dev_type.size(); ++i) {
     raw_src_dev_type[i] = meta.src_dev_type[i];
   }
-  for (int i = 0; i < meta.src_dev_id.size(); ++i) {
+  for (size_t i = 0; i < meta.src_dev_id.size(); ++i) {
     raw_src_dev_id[i] = meta.src_dev_id[i];
   }
-  for (int i = 0; i < meta.dst_dev_type.size(); ++i) {
+  for (size_t i = 0; i < meta.dst_dev_type.size(); ++i) {
     raw_dst_dev_type[i] = meta.dst_dev_type[i];
   }
-  for (int i = 0; i < meta.dst_dev_id.size(); ++i) {
+  for (size_t i = 0; i < meta.dst_dev_id.size(); ++i) {
     raw_dst_dev_id[i] = meta.dst_dev_id[i];
   }
   auto ctrl = &(raw->control);
@@ -669,6 +671,10 @@ void Van::PackMeta(const Meta &meta, char **meta_buf, int *buf_size) {
       raw_node[node_count].num_ports = n.num_ports;
       bzero(raw_node[node_count].ports, 32 * sizeof(int));
       memcpy(raw_node[node_count].ports, n.ports.data(), 32 * sizeof(int));
+      bzero(raw_node[node_count].dev_types, 32 * sizeof(int));
+      memcpy(raw_node[node_count].dev_types, n.dev_types.data(), 32 * sizeof(int));
+      bzero(raw_node[node_count].dev_ids, 32 * sizeof(int));
+      memcpy(raw_node[node_count].dev_ids, n.dev_ids.data(), 32 * sizeof(int));
       bzero(raw_node[node_count].hostname, sizeof(raw_node[node_count].hostname));
       memcpy(raw_node[node_count].hostname, n.hostname.c_str(), n.hostname.size());
       bzero(raw_node[node_count].endpoint_name, sizeof(raw_node[node_count].endpoint_name));
@@ -751,6 +757,10 @@ void Van::UnpackMeta(const char *meta_buf, int buf_size, Meta *meta) {
     memcpy(n.endpoint_name, p.endpoint_name, sizeof(n.endpoint_name));
     bzero(n.ports.data(), 32 * sizeof(int));
     memcpy(n.ports.data(), p.ports, 32 * sizeof(int));
+    bzero(n.dev_types.data(), 32 * sizeof(int));
+    memcpy(n.dev_types.data(), p.dev_types, 32 * sizeof(int));
+    bzero(n.dev_ids.data(), 32 * sizeof(int));
+    memcpy(n.dev_ids.data(), p.dev_ids, 32 * sizeof(int));
     meta->control.node.push_back(n);
   }
 

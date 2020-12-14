@@ -18,10 +18,14 @@ struct RawNode {
   char hostname[64];
   // number of ports
   int num_ports;
-  // all the ports
+  // all the ports this node is binding
   int ports[32];
   // the port this node is binding (ports[0])
   int port;
+  // the type of devices
+  int dev_types[32];
+  // the id of devices
+  int dev_ids[32];
   // whether this node is created by failover
   bool is_recovery;
   // the locally unique id of an customer

@@ -77,6 +77,17 @@ struct Node {
        << (id != kEmpty ? ", id=" + std::to_string(id) : "")
        << ", ip=" << hostname << ", port=" << port << ", is_recovery=" << is_recovery
        << ", aux_id=" << aux_id << ", num_ports=" << num_ports;
+    if (num_ports > 1) {
+      ss << ", ports=[";
+      for (int i = 0; i < num_ports; ++i) {
+        ss << ports[i] << ",";
+      }
+      ss << "], devices=[";
+      for (int i = 0; i < num_ports; ++i) {
+        ss << DeviceTypeName[dev_types[i]] << "[" << dev_ids[i] << "],";
+      }
+      ss << "]";
+    }
     if (endpoint_name_len > 0) {
       ss << ", endpoint_name_len=" << endpoint_name_len << ", endpoint_name={";
       for (size_t i = 0; i < endpoint_name_len; i++) {
@@ -105,6 +116,10 @@ struct Node {
   int num_ports;
   /** \brief the port this node is binding */
   std::array<int, 32> ports;
+  /** \brief the types of devices this node is binding */
+  std::array<int, 32> dev_types;
+  /** \brief the ids of devices this node is binding */
+  std::array<int, 32> dev_ids;
   /** \brief the same port as ports[0] */
   int port;
   /** \brief whether this node is created by failover */
@@ -116,6 +131,7 @@ struct Node {
   /** \brief the auxilary id. currently used for fabric van communication setup */
   int aux_id;
 };
+
 /**
  * \brief meta info of a system control message
  */
@@ -186,7 +202,7 @@ struct Meta {
     if (control.empty() && !simple_app) ss << ", key=" << key; // valid data msg
     if (body.size()) ss << ", body=" << body;
     if (data_type.size()) {
-      ss << ", data_type={";
+      ss << ", dtype={";
       for (auto d : data_type) ss << " " << DataTypeName[static_cast<int>(d)];
       ss << " }";
     }

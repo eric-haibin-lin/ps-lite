@@ -306,9 +306,9 @@ class SArray {
 
   std::string DebugString() const {
     std::stringstream ss;
-    ss << " data_size=" << size() << " "
+    ss << "[data_size=" << size() << " "
        << DeviceTypeName[src_device_type_] << "[" << src_device_id_ << "]->"
-       << DeviceTypeName[dst_device_type_] << "[" << dst_device_id_ << "]";
+       << DeviceTypeName[dst_device_type_] << "[" << dst_device_id_ << "]]";
     return ss.str();
   }
  private:
