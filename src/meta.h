@@ -63,6 +63,14 @@ struct RawMeta {
   int timestamp;
   // data type of message.data[i]
   int data_type_size;
+  /** \brief src device type of message.data[i] */
+  int src_dev_type;
+  /** \brief src device id of message.data[i] */
+  int src_dev_id;
+  /** \brief dst device type of message.data[i] */
+  int dst_dev_type;
+  /** \brief dst device id of message.data[i] */
+  int dst_dev_id;
   // the locally unique id of an customer
   int customer_id;
   // whether or not a push message

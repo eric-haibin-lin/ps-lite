@@ -233,10 +233,10 @@ class ZMQVan : public Van {
           zmq_msg_close(zmsg);
           delete zmsg;
         },
-        msg->meta.src_dev_type.at(i),
-        msg->meta.src_dev_id.at(i),
-        msg->meta.dst_dev_type.at(i),
-        msg->meta.dst_dev_id.at(i)
+        msg->meta.src_dev_type,
+        msg->meta.src_dev_id,
+        msg->meta.dst_dev_type,
+        msg->meta.dst_dev_id
       );
       msg->data.push_back(data);
     }

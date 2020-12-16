@@ -183,6 +183,8 @@ class MultiVan : public Van {
       dst_idx = data.dst_device_id_;
       CHECK_EQ(my_nodes_[src_idx].dev_types[0], data.src_device_type_);
       CHECK_EQ(my_nodes_[src_idx].dev_ids[0], data.src_device_id_);
+      // TODO: check msg.meta.src_dev_ids, types, etc.
+      
     }
     Message van_msg = msg;
     auto van = vans_[src_idx];

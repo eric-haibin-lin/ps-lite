@@ -232,13 +232,13 @@ struct Meta {
   /** \brief data type of message.data[i] */
   std::vector<DataType> data_type;
   /** \brief src device type of message.data[i] */
-  std::vector<DeviceType> src_dev_type;
+  DeviceType src_dev_type = UNK;
   /** \brief src device id of message.data[i] */
-  std::vector<int> src_dev_id;
+  int src_dev_id = -1;
   /** \brief dst device type of message.data[i] */
-  std::vector<DeviceType> dst_dev_type;
+  DeviceType dst_dev_type = UNK;
   /** \brief dst device id of message.data[i] */
-  std::vector<int> dst_dev_id;
+  int dst_dev_id = -1;
   /** \brief system control message */
   Control control;
   /** \brief the byte size */
@@ -270,10 +270,13 @@ struct Message {
     SArray<char> bytes(val);
     meta.data_size += bytes.size();
     data.push_back(bytes);
-    meta.src_dev_type.push_back(val.src_device_type_);
-    meta.src_dev_id.push_back(val.src_device_id_);
-    meta.dst_dev_type.push_back(val.dst_device_type_);
-    meta.dst_dev_id.push_back(val.dst_device_id_);
+    // the data/value array
+    if (data.size() == 2) {
+      meta.src_dev_type = val.src_device_type_;
+      meta.src_dev_id = val.src_device_id_;
+      meta.dst_dev_type = val.dst_device_type_;
+      meta.dst_dev_id = val.dst_device_id_;
+    }
   }
   std::string DebugString() const {
     std::stringstream ss;
