@@ -215,6 +215,8 @@ void RunWorker(int argc, char *argv[], KVWorker<char>* kv, int tid) {
   // Round robin alloc each val in different GPUs, cpu_id = -1
   auto local_size_str = Environment::Get()->find("LOCAL_SIZE");
   auto local_size = local_size_str ? atoi(local_size_str) : 0;
+  auto gpu_only_str = Environment::Get()->find("TEST_GPU_ONLY");
+  auto gpu_only = gpu_only_str ? atoi(gpu_only_str) : 0;
   LOG(INFO) << "GPU LOCAL SIZE " << local_size;
 
   int gpu_id = 0;
@@ -226,6 +228,7 @@ void RunWorker(int argc, char *argv[], KVWorker<char>* kv, int tid) {
       aligned_memory_alloc(&ptr, len, - 1 /* gpu_idx */);
     } else {
       int idx = gpu_id % (local_size + 1) - 1;
+      if (gpu_only) idx = gpu_id % local_size;
       if (idx != -1) {
         LOG(INFO) << "Allocating val on GPU " << idx << " with size " << len;
       } else {
@@ -268,44 +271,46 @@ void RunWorker(int argc, char *argv[], KVWorker<char>* kv, int tid) {
   switch(mode) {
     case PUSH_THEN_PULL: {
       LOG(INFO) << "PUSH_THEN_PULL mode";
-      // push
-      uint64_t accumulated_ms = 0;
-      for (int i = 0; i < repeat; ++i) {
-        auto start = std::chrono::high_resolution_clock::now();
-        for (int server = 0; server < num_servers; server++) {
-          auto keys = server_keys[server];
-          auto lens = server_lens[server];
-          auto vals = server_vals[server];
+      while (true) {
+        // push
+        uint64_t accumulated_ms = 0;
+        for (int i = 0; i < repeat; ++i) {
+          auto start = std::chrono::high_resolution_clock::now();
+          for (int server = 0; server < num_servers; server++) {
+            auto keys = server_keys[server];
+            auto lens = server_lens[server];
+            auto vals = server_vals[server];
 
-          kv->Wait(kv->ZPush(keys, vals, lens));
+            kv->Wait(kv->ZPush(keys, vals, lens));
+          }
+          auto end = std::chrono::high_resolution_clock::now();
+          accumulated_ms += (end - start).count(); // ns
         }
-        auto end = std::chrono::high_resolution_clock::now();
-        accumulated_ms += (end - start).count(); // ns
-      }
-      LL << "push " << len * sizeof(char)
-          << " bytes to each server, repeat=" << repeat
-          << ", total_time="
-          << accumulated_ms / 1e6 << "ms";
+        LL << "push " << len * sizeof(char)
+            << " bytes to each server, repeat=" << repeat
+            << ", total_time="
+            << accumulated_ms / 1e6 << "ms";
 
-      // pull
-      accumulated_ms = 0;
-      for (int i = 0; i < repeat; ++i) {
-        auto start = std::chrono::high_resolution_clock::now();
-        for (int server = 0; server < num_servers; server++) {
-          auto keys = server_keys[server];
-          auto lens = server_lens[server];
-          auto vals = server_vals[server];
+        // pull
+        accumulated_ms = 0;
+        for (int i = 0; i < repeat; ++i) {
+          auto start = std::chrono::high_resolution_clock::now();
+          for (int server = 0; server < num_servers; server++) {
+            auto keys = server_keys[server];
+            auto lens = server_lens[server];
+            auto vals = server_vals[server];
 
-          kv->Wait(kv->ZPull(keys, &vals, &lens));
+            kv->Wait(kv->ZPull(keys, &vals, &lens));
+          }
+          auto end = std::chrono::high_resolution_clock::now();
+          accumulated_ms += (end - start).count(); // ns
         }
-        auto end = std::chrono::high_resolution_clock::now();
-        accumulated_ms += (end - start).count(); // ns
-      }
 
-      LL << "pull " << len * sizeof(char)
-          << " bytes to each server, repeat=" << repeat
-          << ", total_time="
-          << accumulated_ms / 1e6 << "ms";
+        LL << "pull " << len * sizeof(char)
+            << " bytes to each server, repeat=" << repeat
+            << ", total_time="
+            << accumulated_ms / 1e6 << "ms";
+      }
     } break;
     case PUSH_PULL: 
     case PUSH_ONLY: 

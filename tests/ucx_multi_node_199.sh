@@ -12,14 +12,15 @@ function cleanup() {
 trap cleanup EXIT
 # cleanup # cleanup on startup
 
+export ARGS=${ARGS:-"4096000 102400 2"}
 export DMLC_NUM_WORKER=1
 export DMLC_NUM_SERVER=1
 # export DMLC_NUM_WORKER=2
 # export DMLC_NUM_SERVER=2
 # export BYTEPS_ENABLE_IPC=1
 
-export UCX_HOME=/home/tiger/haibin.lin/ps-lite-test-benchmark/ucx_build
-export CUDA_HOME=/home/tiger/lab-work/cpp3rdlib/cuda
+export UCX_HOME=/home/tiger/haibin.lin/ps-lite-test-benchmark/ucx_build_master_cuda
+export CUDA_HOME=/usr/local/cuda
 export LD_LIBRARY_PATH=$UCX_HOME/lib:$CUDA_HOME/lib64
 
 # export NODE_ONE_IP=10.0.0.1 # sched and server
@@ -34,24 +35,24 @@ export UCX_IB_TRAFFIC_CLASS=236
 export DMLC_PS_ROOT_PORT=${DMLC_PS_ROOT_PORT:-19988}     # scheduler's port (can random choose)
 export DMLC_INTERFACE=${DMLC_INTERFACE:-eth0}        # my RDMA interface
 export DMLC_ENABLE_RDMA=1
-export DMLC_ENABLE_UCX=1          # test ucx
+export DMLC_ENABLE_UCX=${DMLC_ENABLE_UCX:-1}          # test ucx
+# export PS_VERBOSE=2
 # export UCX_TLS=all                # not working
 # export UCX_TLS=ib,tcp           # working
 #export UCX_TLS=ib,tcp,cuda_ipc,cuda_copy
 export UCX_TLS=ib,cuda_ipc,cuda_copy
 export UCX_TLS=ib,cuda
-export UCX_TLS=ib,rc_x
-export UCX_MEMTYPE_CACHE=n
-#export UCX_RNDV_SCHEME=put_zcopy
-export BYTEPS_UCX_SHORT_THRESH=0
-# export UCX_NET_DEVICES=mlx5_0:1,mlx5_1:1,mlx5_2:1,mlx5_3:1
+export UCX_TLS=ib,rc_x,cuda
+# export UCX_MEMTYPE_CACHE=n
+export UCX_RNDV_SCHEME=put_zcopy
+#export BYTEPS_UCX_SHORT_THRESH=0
 export UCX_NET_DEVICES=mlx5_1:1
 export UCX_MAX_RNDV_RAILS=4
 
 export LOG_DURATION=20
-export LOCAL_SIZE=0               # test ucx gdr
+export LOCAL_SIZE=${LOCAL_SIZE:-2}               # test ucx gdr
 #export CUDA_VISIBLE_DEVICES=0,1,2,3
-#export CUDA_VISIBLE_DEVICES=0,1
+export CUDA_VISIBLE_DEVICES=0,1
 #export UCX_IB_GPU_DIRECT_RDMA=no
 #export UCX_IB_GPU_DIRECT_RDMA=yes
 
@@ -68,7 +69,7 @@ then
     DMLC_ROLE=scheduler ./test_benchmark &
 
     if [ $DMLC_NUM_WORKER == "2" ]; then
-        DMLC_ROLE=worker BENCHMARK_NTHREAD=1 ./test_benchmark  4096000 102400 2 &
+        DMLC_ROLE=worker BENCHMARK_NTHREAD=1 ./test_benchmark $ARGS &
     fi
     # launch server
     DMLC_ROLE=server ./test_benchmark 
@@ -80,8 +81,7 @@ if [ $DMLC_NUM_WORKER == "2" ]; then
 fi
 
 # launch worker, with 30MB data per push pull, 10000 rounds, push_pull mode
-#DMLC_ROLE=worker BENCHMARK_NTHREAD=1 ./test_benchmark 30000000 10240 1
-DMLC_ROLE=worker BENCHMARK_NTHREAD=1 ./test_benchmark  4096000 102400 2
+DMLC_ROLE=worker BENCHMARK_NTHREAD=1 ./test_benchmark $ARGS
 
 # for correctness test, use this following line and replace previous
 # scheduler / server binary with ./test_correctness
