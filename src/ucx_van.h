@@ -50,6 +50,7 @@ std::mutex g_log_mutex;
 
 const int UCX_OPTION_META = -1;
 const int UCX_OPTION_DATA = -2;
+const int MAX_SID_COUNT = 1 << 31;
 
 class UCXVan;
 
@@ -342,6 +343,7 @@ class UCXVan : public Van {
     setenv("UCX_RNDV_THRESH", "8k", 0);
     setenv("UCX_PROTO_INDIRECT_ID", "off", 0);
     short_send_thresh_ = GetEnv("BYTEPS_UCX_SHORT_THRESH", 4096);
+    force_request_order_ = GetEnv("BYTEPS_UCX_FORCE_REQ_ORDER", 0);
   }
 
   ~UCXVan() {
@@ -396,6 +398,7 @@ class UCXVan : public Van {
 
     ep_pool_.Init(worker_, &my_node_);
     polling_thread_.reset(new std::thread(&UCXVan::PollUCX, this));
+    reorder_thread_.reset(new std::thread(&UCXVan::ReorderMsg, this));
 
     start_mu_.unlock();
 
@@ -408,6 +411,8 @@ class UCXVan : public Van {
     should_stop_ = true;
     polling_thread_->join();
     polling_thread_.reset();
+    reorder_thread_->join();
+    reorder_thread_.reset();
 
     ep_pool_.Cleanup();
 
@@ -478,6 +483,11 @@ class UCXVan : public Van {
     if (IsValidPushpull(msg)) {
       if (msg.meta.request) {
         msg.meta.key = DecodeKey(msg.data[0]);
+        // sequence id
+        std::lock_guard<std::mutex> lk(sid_mtx_);
+        int sid = next_send_sids_[id] % MAX_SID_COUNT;
+        next_send_sids_[id] = sid + 1;
+        msg.meta.sid = sid;
       }
       if (IsDataMsg(msg)) {
         msg.meta.val_len = msg.data[1].size();
@@ -515,10 +525,62 @@ class UCXVan : public Van {
     return len + msg.meta.data_size;
   }
 
+  bool IsPushpullRequest(const RawMeta* raw) {
+    CHECK(raw != nullptr);
+    auto ctrl = &(raw->control);
+    Control::Command cmd = static_cast<Control::Command>(ctrl->cmd);
+    if (cmd != Control::EMPTY) return false;
+    if (raw->simple_app) return false;
+    return raw->request;
+  }
+
+  void ReorderMsg() {
+    while (!should_stop_.load()) {
+      UCXBuffer buf;
+      recv_buffers_.WaitAndPop(&buf);
+      RawMeta *raw = (RawMeta*) buf.raw_meta;
+      // XXX assume single reorder thread
+      // std::lock_guard<std::mutex> lk(sid_mtx_);
+      // for non-pushpull messages, we dont check the sid
+      if (!IsPushpullRequest(raw) || !force_request_order_) {
+        ordered_recv_buffers_.Push(buf);
+        continue;
+      }
+      int sid = raw->sid;
+      CHECK(sid >= 0) << "invalid sid " << sid;
+      int sender = buf.sender;
+      CHECK(sender >= 0) << "invalid sender " << sender;
+      int next_sid = next_recv_sids_[sender];
+      // check if this is the next sid
+      auto& buffs = recv_sid_buffers_[sender];
+      if (sid == next_sid) {
+        ordered_recv_buffers_.Push(buf);
+        // also clears any existing bufs
+        int count = 0;
+        while (true) {
+          next_sid = (next_sid + 1) % MAX_SID_COUNT;
+          if (buffs.find(next_sid) != buffs.end()) {
+            count++;
+            ordered_recv_buffers_.Push(buffs[next_sid]);
+            buffs.erase(next_sid);
+          } else {
+            break;
+          }
+        }
+        if (count > 0) PS_VLOG(1) << "OO count = " << count;
+        next_recv_sids_[sender] = next_sid;
+      } else {
+        PS_VLOG(1) << "OO msg arrived early sid=" << sid;
+        buffs[sid] = buf;
+      }
+    }
+  }
+
   int RecvMsg(Message *msg) override {
     msg->data.clear();
     UCXBuffer buf;
-    recv_buffers_.WaitAndPop(&buf);
+    // recv_buffers_.WaitAndPop(&buf);
+    ordered_recv_buffers_.WaitAndPop(&buf);
 
     // note size(2d param) is not really used by UnpackMeta
     UnpackMeta(buf.raw_meta, -1, &msg->meta);
@@ -828,6 +890,16 @@ class UCXVan : public Van {
   std::atomic<bool>                                 should_stop_;
   std::unordered_map<Key, MemAddresses>             rpool_;
   int                                               short_send_thresh_;
+  // send/recv sequence id
+  std::unordered_map<int, int>                      next_send_sids_;
+  std::unordered_map<int, int>                      next_recv_sids_;
+  std::mutex                                        sid_mtx_;
+  // buffers for message whose callback is invoked early
+  std::unordered_map<int, std::unordered_map<int, UCXBuffer>> recv_sid_buffers_;
+  ThreadsafeQueue<UCXBuffer>                        ordered_recv_buffers_;
+  std::unique_ptr<std::thread>                      reorder_thread_;
+  int                                               force_request_order_;
+
 };  // class UCXVan
 
 };  // namespace ps
