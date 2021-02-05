@@ -4,32 +4,106 @@
 #include <unistd.h>
 #include "ps/ps.h"
 
+#if DMLC_USE_CUDA
+#include <cuda_runtime.h>
+#define CUDA_CALL(func)                                      \
+  {                                                          \
+    cudaError_t e = (func);                                  \
+    CHECK(e == cudaSuccess || e == cudaErrorCudartUnloading) \
+        << "CUDA: " << cudaGetErrorString(e);                \
+  }
+#endif
+
 #define DIVUP(x, y) (((x)+(y)-1)/(y))
 #define ROUNDUP(x, y) (DIVUP((x), (y))*(y))
 #define DEBUG_PRINT_TENSOR_VALUE(X) (*((float *)(X) + 0))
 #define DEBUG_PRINT_TENSOR_ADDRESS(X) (reinterpret_cast<uint64_t>(X))
 
+
 using namespace ps;
 
-enum MODE {
+enum MODE { 
     PUSH_THEN_PULL = 0,
     PUSH_PULL = 1,
     PUSH_ONLY = 2, 
     PULL_ONLY = 3
 };
 std::unordered_map<uint64_t, KVPairs<char> > mem_map;
-bool debug_mode_ = false;
 
-void aligned_memory_alloc(void** ptr, size_t size) {
-  size_t page_size = sysconf(_SC_PAGESIZE);
-  void* p;
-  int size_aligned = ROUNDUP(size, page_size);
-  int ret = posix_memalign(&p, page_size, size_aligned);
-  CHECK_EQ(ret, 0) << "posix_memalign error: " << strerror(ret);
-  CHECK(p);
-  memset(p, 1, size);
-  *ptr = p;
+// A map for the registered buffers
+std::unordered_map<int, std::unordered_map<ps::Key, SArray<char>>> registered_buffs;
+
+bool debug_mode_ = false;
+int num_ports = 1;
+bool enable_recv_buffer = false;
+int local_size = 0;
+bool enable_cpu = 0;
+bool skip_dev_id_check = false;
+
+bool env2bool(const char* var, bool default_val) {
+  auto env_str = Environment::Get()->find(var);
+  bool val = env_str ? atoi(env_str) != 0 : default_val;
+  return val;
 }
+
+int env2int(const char* var, int default_val) {
+  auto env_str = Environment::Get()->find(var);
+  int val = env_str ? atoi(env_str) : default_val;
+  return val;
+}
+
+// when local_size > 0, we use context CPU(-1), GPU(0), GPU(1), etc
+// otherwise, we use CPU(0), CPU(1), etc
+int src_key2ctx(int key) {
+  int dev_id;
+  if (local_size == 0) {
+    dev_id = key % num_ports;
+  } else {
+    if (enable_cpu) {
+      int num_devices = local_size + 1;
+      dev_id = key % num_devices;
+      dev_id -= 1;
+    } else {
+      dev_id = key % local_size;
+    }
+  }
+  return dev_id;
+}
+
+// TODO: use GPU context in dst
+int dst_key2ctx(int key) {
+  int dev_id;
+  if (local_size == 0) {
+    dev_id = key % num_ports;
+  } else {
+    dev_id = -1;
+  }
+  return dev_id;
+}
+
+void aligned_memory_alloc(void** ptr, size_t size, int device_idx, DeviceType device) {
+  if (device == CPU) {
+    // CPU Alloc
+    size_t page_size = sysconf(_SC_PAGESIZE);
+    void* p;
+    int size_aligned = ROUNDUP(size, page_size);
+    int ret = posix_memalign(&p, page_size, size_aligned);
+    CHECK_EQ(ret, 0) << "posix_memalign error: " << strerror(ret);
+    CHECK(p);
+    memset(p, 1, size);
+    *ptr = p;
+  } else {
+    CHECK(device == GPU);
+#if DMLC_USE_CUDA
+    // GPU Alloc, malloc should automatically gives page aligned.
+    CUDA_CALL(cudaSetDevice(device_idx));
+    CUDA_CALL(cudaMalloc(ptr, size));
+#else
+    CHECK(false) << "Please build with USE_CUDA=1";
+#endif
+  }
+}
+
 
 void float_sum(float *dst, float *src, size_t len) {
   if (len == 0) return;
@@ -37,6 +111,12 @@ void float_sum(float *dst, float *src, size_t len) {
     dst[i] = dst[i] + src[i];
   }
 }
+
+uint64_t DecodeKey(ps::Key key) {
+  auto kr = ps::Postoffice::Get()->GetServerKeyRanges()[ps::MyRank()];
+  return key - kr.begin();
+}
+
 
 template <typename Val>
 void EmptyHandler(const KVMeta &req_meta, const KVPairs<Val> &req_data, KVServer<Val> *server) {
@@ -46,26 +126,44 @@ void EmptyHandler(const KVMeta &req_meta, const KVPairs<Val> &req_data, KVServer
     CHECK_EQ(req_data.vals.size(), (size_t)req_data.lens[0]) 
         << "key=" << key << ", " << req_data.vals.size() << ", " << req_data.lens[0];
 
+    auto key_decoded = DecodeKey(key);
+    // check device id.
+    if (!skip_dev_id_check) {
+      int expected_device_id = dst_key2ctx(key_decoded);
+      CHECK_EQ(req_data.vals.dst_device_id_, expected_device_id)
+        << "key=" << key_decoded << ", "
+        << req_data.vals.dst_device_id_ << " v.s. " << expected_device_id;
+    }
+    auto recved = reinterpret_cast<char*>(req_data.vals.data());
 
     if (mem_map.find(key) == mem_map.end()) {
       size_t len = (size_t) req_data.vals.size();
 
       void* ptr_val;
-      aligned_memory_alloc(&ptr_val, len);  
+      aligned_memory_alloc(&ptr_val, len, -1, CPU);
       mem_map[key].vals.reset((char*)ptr_val, len, [](void *){ });
 
       void* ptr_key;
-      aligned_memory_alloc(&ptr_key, sizeof(Key));  
+      aligned_memory_alloc(&ptr_key, sizeof(Key), -1, CPU);  
       mem_map[key].keys.reset((Key*)ptr_key, 1, [](void *){ });
       memcpy(ptr_key, &key, sizeof(Key));
 
       void* ptr_len;
-      aligned_memory_alloc(&ptr_len, sizeof(int));  
+      aligned_memory_alloc(&ptr_len, sizeof(int), -1, CPU);
       mem_map[key].lens.reset((int*)ptr_len, 1, [](void *){ });
       memcpy(ptr_len, &len, sizeof(int));
     }
-
-    auto recved = reinterpret_cast<char*>(req_data.vals.data());
+    if (enable_recv_buffer) {
+      int worker_id = req_meta.sender;
+      CHECK(registered_buffs.find(worker_id) != registered_buffs.end())
+        << worker_id;
+      auto& buffs = registered_buffs[worker_id];
+      CHECK(buffs.find(key_decoded) != buffs.end()) << key_decoded;
+      auto registered = buffs[key_decoded].data();
+      CHECK(registered == recved) << (long long) registered << " v.s. "
+        << (long long) recved << " key=" << key_decoded
+        << " sender=" << worker_id << " size=" << req_data.vals.size();
+    }
     // only sum the first 4 bytes
     size_t sum_len = debug_mode_ ? req_data.vals.size() : 0;
     float_sum((float*) mem_map[key].vals.data(), (float*) recved, sum_len);
@@ -82,21 +180,109 @@ void EmptyHandler(const KVMeta &req_meta, const KVPairs<Val> &req_data, KVServer
     // send push response (empty)
     KVPairs<char> res;
     server->Response(req_meta, res);
-  }
-  else {
+  } else {
     auto iter = mem_map.find(key);
     CHECK_NE(iter, mem_map.end());
     server->Response(req_meta, iter->second);
   }
 }
 
-void StartServer() {
+void GenerateVals(int total_key_num, int worker_rank,
+                  int len, int num_ports,
+                  std::vector<SArray<char>>* server_vals) {
+  // values are generated on the CPU/GPU depending on the env var
+  // We assume LOCAL_SIZE number of GPU contexts
+  for (int key = 0; key < total_key_num; key++) {
+    void* ptr;
+    SArray<char> vals;
+    // CPU only
+    int src_dev_id = src_key2ctx(key + worker_rank);
+    int dst_dev_id = dst_key2ctx(key);
+    if (local_size == 0) {
+      // Normal all cpu unit test
+      aligned_memory_alloc(&ptr, len, src_dev_id, CPU);
+      vals.reset((char*) ptr, len * sizeof(char), [](void *){},
+                 CPU, src_dev_id, CPU, dst_dev_id);
+    } else {
+      CHECK(!enable_recv_buffer)
+        << "GPU test with registered recv buffer is not implemented yet";
+      DeviceType src_device = src_dev_id < 0 ? CPU : GPU;
+      DeviceType dst_device = dst_dev_id < 0 ? CPU : GPU;
+      aligned_memory_alloc(&ptr, len, src_dev_id, src_device);
+      vals.reset((char*) ptr, len * sizeof(char), [](void *){},
+                 src_device, src_dev_id, dst_device, dst_dev_id);
+    }
+    server_vals->push_back(vals);
+    LOG(INFO) << "Init val[" << key << "]: " << vals.DebugString();
+  }
+}
+
+void GenerateKeys(int total_key_num, std::vector<SArray<Key>>* server_keys) {
+  auto krs = ps::Postoffice::Get()->GetServerKeyRanges();
+  const int num_servers = krs.size();
+  for (int key = 0; key < total_key_num; key++) {
+    int server = key % num_servers;
+    // page aligned keys
+    void* ptr_key;
+    aligned_memory_alloc(&ptr_key, sizeof(Key), -1, CPU);
+    SArray<Key> keys;
+    keys.reset((Key*) ptr_key, 1, [](void *){});
+    ps::Key ps_key = krs[server].begin() + key;
+    memcpy(ptr_key, &ps_key, sizeof(Key));
+    server_keys->push_back(keys);
+    PS_VLOG(1) << "key=" << key << "(" << ps_key << ") assigned to server " << server;
+  }
+}
+
+void GenerateLens(int total_key_num, int len, std::vector<SArray<int>>* server_lens) {
+  for (int key = 0; key < total_key_num; key++) {
+    // page aligned lens
+    void* ptr_len;
+    aligned_memory_alloc(&ptr_len, sizeof(int), -1, CPU);
+    SArray<int> lens;
+    lens.reset((int*) ptr_len, 1, [](void *){});
+    memcpy(ptr_len, &len, sizeof(len));
+    server_lens->push_back(lens);
+  }
+}
+
+
+void StartServer(int argc, char *argv[]) {
   if (!IsServer()) return;
   debug_mode_ = Environment::Get()->find("DEBUG_MODE") ? true : false;
 
   auto server = new KVServer<char>(0);
   server->set_request_handle(EmptyHandler<char>);
   RegisterExitCallback([server]() { delete server; });
+
+  if (!enable_recv_buffer) return;
+  int num_workers = Postoffice::Get()->num_workers();
+  int num_servers = Postoffice::Get()->num_servers();
+  auto my_rank = ps::Postoffice::Get()->my_rank();
+  LOG(INFO) << "Registering buffers for server rank=" << my_rank
+    << ", num_servers=" << num_servers;
+  auto v = Environment::Get()->find("NUM_KEY_PER_SERVER");  
+  const int how_many_key_per_server = v ? atoi(v) : 40;
+  const int total_key_num = num_servers * how_many_key_per_server;
+  int len = (argc > 1) ? atoi(argv[1]) : 1024000;
+
+  for (int worker_rank = 0; worker_rank < num_workers; worker_rank++) {
+    std::vector<SArray<char>> server_vals;
+    std::vector<SArray<Key>> server_keys;
+    std::vector<SArray<int>> server_lens;
+    GenerateVals(total_key_num, worker_rank, len, num_ports, &server_vals);
+    GenerateKeys(total_key_num, &server_keys);
+    GenerateLens(total_key_num, len, &server_lens);
+    for (int key = 0; key < total_key_num; ++key) {
+      if (my_rank == (key % num_servers)) {
+        int worker_id = ps::Postoffice::Get()->WorkerRankToID(worker_rank);
+        server->RegisterRecvBuffer(worker_id, server_keys[key], server_vals[key],
+                                   server_lens[key]);
+        registered_buffs[worker_id][key] = server_vals[key];
+      }
+    }
+  }
+  ps::Postoffice::Get()->Barrier(0, kWorkerGroup + kServerGroup);
 }
 
 void push_pull(KVWorker<char> &kv, 
@@ -183,45 +369,27 @@ void RunWorker(int argc, char *argv[]) {
   MODE mode = (argc > 3) ? static_cast<MODE>(atoi(argv[3])) : PUSH_PULL;
 
   auto v = Environment::Get()->find("NUM_KEY_PER_SERVER");
+
   const int how_many_key_per_server = v ? atoi(v) : 40;
   const int total_key_num = num_servers * how_many_key_per_server;
 
-  std::vector<SArray<char> > server_vals;
-  std::vector<SArray<Key> > server_keys;
-  std::vector<SArray<int> > server_lens;
-  for (int key = 0; key < total_key_num; key++) {
-    void* ptr;
-    aligned_memory_alloc(&ptr, len);
-    SArray<char> vals;
-    vals.reset((char*) ptr, len * sizeof(char), [](void *){});
-    server_vals.push_back(vals);
+  auto my_rank = ps::Postoffice::Get()->my_rank();
+  std::vector<SArray<char>> server_vals;
+  std::vector<SArray<Key>> server_keys;
+  std::vector<SArray<int>> server_lens;
+
+  GenerateVals(total_key_num, my_rank, len, num_ports, &server_vals);
+  GenerateKeys(total_key_num, &server_keys);
+  GenerateLens(total_key_num, len, &server_lens);
+
+  // place a barrier to make sure the server has all the buffers registered.
+  if (enable_recv_buffer) {
+    ps::Postoffice::Get()->Barrier(0, kWorkerGroup + kServerGroup);
   }
 
   // init push, do not count this into time cost
   for (int key = 0; key < total_key_num; key++) {
-    int server = key % num_servers;
-    PS_VLOG(1) << "key=" << key << " assigned to server " << server;
-
-    auto vals = server_vals[key];
-
-    // page aligned keys
-    void* ptr_key;
-    aligned_memory_alloc(&ptr_key, sizeof(Key));
-    SArray<Key> keys;
-    keys.reset((Key*) ptr_key, 1, [](void *){});
-    ps::Key ps_key = krs[server].begin() + key;
-    memcpy(ptr_key, &ps_key, sizeof(Key));
-    server_keys.push_back(keys);
-
-    // page aligned vals
-    void* ptr_len;
-    aligned_memory_alloc(&ptr_len, sizeof(int));
-    SArray<int> lens;
-    lens.reset((int*) ptr_len, 1, [](void *){});
-    memcpy(ptr_len, &len, sizeof(len));
-    server_lens.push_back(lens);
-
-    kv.Wait(kv.ZPush(keys, vals, lens));
+    kv.Wait(kv.ZPush(server_keys[key], server_vals[key], server_lens[key]));
   }
 
   switch(mode) {
@@ -274,17 +442,30 @@ void RunWorker(int argc, char *argv[]) {
     default:
       CHECK(0) << "unknown mode " << mode;
   }
-
-
 }
 
 int main(int argc, char *argv[]) {
   // disable multi-threaded processing first
   setenv("ENABLE_SERVER_MULTIPULL", "0", 1);
+  // init env var options
+  num_ports = env2int("DMLC_NUM_PORTS", 1);
+  LOG(INFO) << num_ports << " ports per node";
+  enable_recv_buffer = env2bool("ENABLE_RECV_BUFFER", false);
+  if (enable_recv_buffer) {
+    LOG(INFO) << "recv buffer registration is enabled";
+  } else {
+    LOG(INFO) << "recv buffer registration is NOT enabled";
+  }
+  local_size = env2int("LOCAL_SIZE", 0);
+  LOG(INFO) << "GPU LOCAL SIZE = " << local_size;
+  enable_cpu = env2bool("TEST_ENABLE_CPU", true);
+  CHECK(local_size || enable_cpu);
+  skip_dev_id_check = env2bool("SKIP_DEV_ID_CHECK", false);
+
   // start system
   Start(0);
   // setup server nodes
-  StartServer();
+  StartServer(argc, argv);
   // run worker nodes
   RunWorker(argc, argv);
   // stop system

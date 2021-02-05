@@ -74,7 +74,7 @@ class ZMQVan : public Van {
 
   void Stop() override {
     PS_VLOG(1) << "Stopping " << my_node_.ShortDebugString();
-    Van::Stop();
+    if (!standalone_) Van::Stop();
     // join all threads
     should_stop_ = true;
     for (auto t : thread_list_) t->join();
@@ -95,7 +95,9 @@ class ZMQVan : public Van {
     context_ = nullptr;
   }
 
-  int Bind(const Node& node, int max_retry) override {
+  int Bind(Node& node, int max_retry) override {
+    CHECK_EQ(my_node_.num_ports, 1)
+      << "zmq van does not support multiple ports";
     receiver_ = zmq_socket(context_, ZMQ_ROUTER);
     int option = 1;
     CHECK(!zmq_setsockopt(receiver_, ZMQ_ROUTER_MANDATORY, &option, sizeof(option)))
@@ -117,9 +119,9 @@ class ZMQVan : public Van {
       if (ret == 0) break;
       if (i == max_retry) {
         port = -1;
-	int zmq_err = zmq_errno();
-	LOG(FATAL) << "Reached max retry for bind: " << zmq_strerror(zmq_err)
-		   << ". errno = " << zmq_err;
+        int zmq_err = zmq_errno();
+        LOG(FATAL) << "Reached max retry for bind: " << zmq_strerror(zmq_err)
+          << ". errno = " << zmq_err;
       } else {
         port = 10000 + rand_r(&seed) % 40000;
       }
@@ -149,6 +151,9 @@ class ZMQVan : public Van {
       PS_VLOG(1) << "Zmq skipped connection to node " << node.DebugString()
                  << ". My node is " << my_node_.DebugString();
       return;
+    } else {
+      PS_VLOG(1) << "Zmq connecting to node " << node.DebugString()
+                 << ". My node is " << my_node_.DebugString();
     }
     void* sender = zmq_socket(context_, ZMQ_DEALER);
     CHECK(sender != NULL)
@@ -198,6 +203,20 @@ class ZMQVan : public Van {
     return ZmqSendMsg(socket, msg);
   }
 
+  void RegisterRecvBuffer(Message &msg) {
+    CHECK_EQ(msg.data.size(), 3);
+    auto key_ptr = reinterpret_cast<Key*>(msg.data[0].data());
+    auto val = msg.data[1];
+    auto sender = msg.meta.sender;
+    auto& buffs = registered_buffs_[sender];
+    buffs[*key_ptr] = val;
+
+    PS_VLOG(1) << "Registered buffer for worker=" << sender << ", key="
+      << *key_ptr << ", size=" << val.size() << ", addr=" << (long long)val.data()
+      << ", my_id=" << my_node_.id
+      << " buff_count=" << registered_buffs_.size();
+  }
+
   int RecvMsg(Message* msg) override {
     msg->data.clear();
 
@@ -205,8 +224,8 @@ class ZMQVan : public Van {
     recv_buffers_.WaitAndPop(&notification);
 
     size_t recv_bytes = 0;
-
-    msg->meta.sender = notification.sender;
+    int sender = notification.sender;
+    msg->meta.sender = sender;
     msg->meta.recver = my_node_.id;
 
     char* meta_buf = CHECK_NOTNULL((char*)zmq_msg_data(notification.meta_zmsg));
@@ -221,13 +240,41 @@ class ZMQVan : public Van {
       size_t size = zmq_msg_size(zmsg);
       recv_bytes += size;
 
+      // use the registered buffer for the value
+      // for testing purpose only, since this leads to an extra copy
+      if (i == 1 && size != 0) {
+        if (registered_buffs_.find(sender) != registered_buffs_.end()) {
+          Key* key = reinterpret_cast<Key*>(msg->data[0].data());
+          auto& buffs = registered_buffs_[sender];
+          if (buffs.find(*key) != buffs.end()) {
+            SArray<char> val = buffs[*key];
+            CHECK_EQ(val.size(), size) << val.size() << " v.s." << size;
+            std::memcpy(val.data(), buf, val.size());
+            msg->data.push_back(val);
+            PS_VLOG(3) << "Using registered buffer " << (long long) val.data() << ", key=" << *key;
+            continue;
+          } else {
+            PS_VLOG(3) << "Cannot find registered buffer for key=" << *key;
+          }
+        } else {
+          PS_VLOG(3) << "Cannot find registered buffer for sender=" << sender << " my_id=" << my_node_.id
+            << " buff count=" << registered_buffs_.size();
+        }
+      }
 
       SArray<char> data;
       // zero copy
-      data.reset(buf, size, [zmsg, size](void *) {
-        zmq_msg_close(zmsg);
-        delete zmsg;
-      });
+      data.reset(buf, size, 
+        [zmsg, size](void *) {
+          zmq_msg_close(zmsg);
+          delete zmsg;
+        },
+        msg->meta.src_dev_type,
+        msg->meta.src_dev_id,
+        msg->meta.dst_dev_type,
+        msg->meta.dst_dev_id
+      );
+
       msg->data.push_back(data);
     }
 
@@ -428,6 +475,7 @@ class ZMQVan : public Van {
 
   std::vector<std::thread*> thread_list_;
   bool standalone_;
+  std::unordered_map<int, std::unordered_map<Key, SArray<char>>> registered_buffs_;
 
 };
 }  // namespace ps

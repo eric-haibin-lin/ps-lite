@@ -33,7 +33,7 @@ std::mutex g_log_mutex;
  do { \
    if (_prio <= Postoffice::Get()->verbose()) { \
      std::lock_guard<std::mutex> lock(g_log_mutex); \
-     LOG(INFO) << (_my_node)->ShortDebugString() << " " << _x << std::endl; \
+     LOG(INFO) << (_my_node)->ShortDebugString() << " " << _x; \
    } \
  } while(0)
 
@@ -47,6 +47,10 @@ std::mutex g_log_mutex;
     (_req)->completed     = false; \
     ucp_request_free(_req); \
   } while(0)
+
+const int UCX_OPTION_META = -1;
+const int UCX_OPTION_DATA = -2;
+const int MAX_SID_COUNT = 1 << 31;
 
 class UCXVan;
 
@@ -101,7 +105,7 @@ public:
       return;
     }
 
-    UCX_LOGE(1, "ep create TO: id" << node.id << " hn " << node.hostname <<
+    UCX_LOGE(1, "ep create TO: id " << node.id << " hn " << node.hostname <<
              " port " << node.port);
 
     struct addrinfo *remote_addr;
@@ -209,8 +213,12 @@ public:
     void *req = ucp_ep_close_nb(ep, UCP_EP_CLOSE_MODE_FLUSH);
     if (UCS_PTR_IS_PTR(req)) {
       close_ep_reqs_.push(req);
-    } else if (UCS_PTR_STATUS(req) != UCS_OK) {
-      LOG(ERROR) << "failed to close ep: " << ep;
+    } else {
+      ucs_status_t status = UCS_PTR_STATUS(req);
+      if ((status != UCS_OK) && (status != UCS_ERR_ENDPOINT_TIMEOUT)) {
+        LOG(ERROR) << "failed to close ep: " << ep << "("
+                   << ucs_status_string(status) << ")";
+      }
     }
 
     UCX_LOGE(2, "close ep " << ep << " with req " << req);
@@ -219,21 +227,30 @@ public:
   void ErrorHandler(ucp_ep_h ep)
   {
     mu_.lock();
-    auto check  = [ep](const auto &mo) {return mo.second->ep == ep;};
-    auto result = std::find_if(client_eps_.begin(), client_eps_.end(), check);
-    if (result != client_eps_.end()) {
-        UCXEp *uep = result->second.get();
-        if (!uep->connected) {
-            uep->ep = nullptr;
-            std::this_thread::sleep_for(std::chrono::milliseconds(reconnect_tmo_));
-            Create(uep);
-            UCX_LOGE(1, "ep close errh: " << ep << "|" << result->first
-                     << " Reconnect, close reqs " << close_ep_reqs_.size());
-        } else {
-            UCX_LOGE(1, "ep close errh: " << ep << "|" << result->first
-                     << " peer failure");
-        }
+    auto client_check = [ep](const auto &mo) {return mo.second->ep == ep;};
+    auto client_it    = std::find_if(client_eps_.begin(), client_eps_.end(),
+                                     client_check);
+    if (client_it != client_eps_.end()) {
+      UCXEp *uep = client_it->second.get();
+      if (!uep->connected) {
+        uep->ep = nullptr;
+        std::this_thread::sleep_for(std::chrono::milliseconds(reconnect_tmo_));
+        Create(uep);
+        UCX_LOGE(1, "ep close errh: " << ep << "|" << client_it->first
+                 << " Reconnect, close reqs " << close_ep_reqs_.size());
+      } else {
+        UCX_LOGE(1, "ep close errh: " << ep << "|" << client_it->first
+                 << " peer failure");
+        client_eps_.erase(client_it);
+      }
     } else {
+      auto server_check = [ep](const auto &mo) {return mo->ep == ep;};
+      auto server_it    = std::find_if(server_eps_.begin(), server_eps_.end(),
+                                       server_check);
+      // ep may not be present in the set if ep id is not arrived yet (see AmRxNodeInfoReq)
+      if (server_it != server_eps_.end()) {
+        server_eps_.erase(server_it);
+      }
       UCX_LOGE(1, "ep close errh: " << ep);
     }
     mu_.unlock();
@@ -324,10 +341,14 @@ class UCXVan : public Van {
     setenv("UCX_IB_NUM_PATHS", "2", 0);
     setenv("UCX_SOCKADDR_CM_ENABLE", "y", 0);
     setenv("UCX_RNDV_THRESH", "8k", 0);
+    setenv("UCX_PROTO_INDIRECT_ID", "off", 0);
     short_send_thresh_ = GetEnv("BYTEPS_UCX_SHORT_THRESH", 4096);
+    force_request_order_ = GetEnv("BYTEPS_UCX_FORCE_REQ_ORDER", 0);
   }
 
-  ~UCXVan() {}
+  ~UCXVan() {
+    LOG(INFO) << "~UCXVan";
+  }
 
   virtual std::string GetType() const {
     return std::string("ucx");
@@ -377,6 +398,7 @@ class UCXVan : public Van {
 
     ep_pool_.Init(worker_, &my_node_);
     polling_thread_.reset(new std::thread(&UCXVan::PollUCX, this));
+    reorder_thread_.reset(new std::thread(&UCXVan::ReorderMsg, this));
 
     start_mu_.unlock();
 
@@ -389,6 +411,8 @@ class UCXVan : public Van {
     should_stop_ = true;
     polling_thread_->join();
     polling_thread_.reset();
+    reorder_thread_->join();
+    reorder_thread_.reset();
 
     ep_pool_.Cleanup();
 
@@ -397,11 +421,15 @@ class UCXVan : public Van {
     ucp_cleanup(context_);
 
     for (auto& it : rpool_) {
-      free(it.second.first);
+      for (auto& it2 : it.second) {
+        free(it2.second.first);
+      }
     }
   }
 
-  int Bind(const Node &node, int max_retry) override {
+  int Bind(Node& node, int max_retry) override {
+    CHECK_EQ(my_node_.num_ports, 1)
+      << "ucx van does not support multiple ports";
     auto val = Environment::Get()->find("DMLC_NODE_HOST");
     struct sockaddr_in addr = {};
     if (val) {
@@ -451,30 +479,40 @@ class UCXVan : public Van {
       return -1;
     }
 
-    msg.meta.val_len = 0;
-    msg.meta.option  = 0;
+    msg.meta.option = UCX_OPTION_META;
     if (IsValidPushpull(msg)) {
       if (msg.meta.request) {
         msg.meta.key = DecodeKey(msg.data[0]);
+        // sequence id
+        std::lock_guard<std::mutex> lk(sid_mtx_);
+        int sid = next_send_sids_[id] % MAX_SID_COUNT;
+        next_send_sids_[id] = sid + 1;
+        msg.meta.sid = sid;
       }
       if (IsDataMsg(msg)) {
         msg.meta.val_len = msg.data[1].size();
+        msg.meta.option = UCX_OPTION_DATA;
+      } else if (!msg.meta.push && msg.meta.request) {
+        // Save pull data address
+        std::lock_guard<std::mutex> lock(w_pool_mtx_);
+        CHECK(msg.meta.addr != 0);
+        w_pool_[msg.meta.key] = (char*) msg.meta.addr;
       }
     }
 
-    if (msg.meta.push && msg.meta.request) {
-      // Save push data address for later pull
-      w_pool_[msg.meta.key] = msg.data[1].data();
-    }
-
     int len = SendMeta(ep, msg);
+    // meta only
+    if (msg.meta.option == UCX_OPTION_META) {
+      return len;
+    }
+    // meta with data
     if (len == GetPackMetaLen(msg.meta) + msg.meta.val_len) {
       return len + msg.meta.data_size; // No data, or data was bundled with meta
     }
-
+    // data
     CHECK(IsDataMsg(msg));
 
-    ucp_tag_t tag       = MakeTag(my_node_.id, UCX_TAG_DATA);
+    ucp_tag_t tag       = MakeTag(my_node_.id, Tags::UCX_TAG_DATA, msg.meta.key);
     ucs_status_ptr_t st = ucp_tag_send_nb(ep, msg.data[1].data(),
                                           msg.data[1].size(), ucp_dt_make_contig(1),
                                           tag, TxReqCompletedCb);
@@ -487,10 +525,61 @@ class UCXVan : public Van {
     return len + msg.meta.data_size;
   }
 
+  bool IsPushpullRequest(const RawMeta* raw) {
+    CHECK(raw != nullptr);
+    auto ctrl = &(raw->control);
+    Control::Command cmd = static_cast<Control::Command>(ctrl->cmd);
+    if (cmd != Control::EMPTY) return false;
+    if (raw->simple_app) return false;
+    return raw->request;
+  }
+
+  void ReorderMsg() {
+    while (!should_stop_.load()) {
+      UCXBuffer buf;
+      recv_buffers_.WaitAndPop(&buf);
+      RawMeta *raw = (RawMeta*) buf.raw_meta;
+      // XXX assume a single reorder thread, so we do not need to acquire mutex
+      // std::lock_guard<std::mutex> lk(sid_mtx_);
+      if (!IsPushpullRequest(raw) || !force_request_order_) {
+        // for non-pushpull messages, we dont check the sid
+        ordered_recv_buffers_.Push(buf);
+        continue;
+      }
+      int sid = raw->sid;
+      CHECK(sid >= 0) << "invalid sid " << sid;
+      int sender = buf.sender;
+      CHECK(sender >= 0) << "invalid sender " << sender;
+      int next_sid = next_recv_sids_[sender];
+      // check if this is the next sid
+      auto& buffs = recv_sid_buffers_[sender];
+      if (sid == next_sid) {
+        ordered_recv_buffers_.Push(buf);
+        // also clears any existing bufs
+        int count = 0;
+        while (true) {
+          next_sid = (next_sid + 1) % MAX_SID_COUNT;
+          if (buffs.find(next_sid) != buffs.end()) {
+            count++;
+            ordered_recv_buffers_.Push(buffs[next_sid]);
+            buffs.erase(next_sid);
+          } else {
+            break;
+          }
+        }
+        if (count > 0) PS_VLOG(4) << "out-of-order count = " << count;
+        next_recv_sids_[sender] = next_sid;
+      } else {
+        PS_VLOG(4) << "out-of-order msg arrived. sid=" << sid;
+        buffs[sid] = buf;
+      }
+    }
+  }
+
   int RecvMsg(Message *msg) override {
     msg->data.clear();
     UCXBuffer buf;
-    recv_buffers_.WaitAndPop(&buf);
+    ordered_recv_buffers_.WaitAndPop(&buf);
 
     // note size(2d param) is not really used by UnpackMeta
     UnpackMeta(buf.raw_meta, -1, &msg->meta);
@@ -500,8 +589,9 @@ class UCXVan : public Van {
     msg->meta.sender = buf.sender;
     msg->meta.recver = my_node_.id;
 
+    // for pull request, we still need to set the key
     if (!IsValidPushpull(*msg) || (msg->meta.push && !msg->meta.request)) {
-      CHECK_EQ(msg->meta.val_len, 0);
+      CHECK_EQ(msg->meta.option, UCX_OPTION_META);
       return total_len;
     }
 
@@ -531,7 +621,11 @@ class UCXVan : public Van {
   }
 
  private:
-  enum Tags { UCX_TAG_META = 0, UCX_TAG_DATA };
+  enum class Tags : uint64_t {
+    UCX_TAG_META = 0,
+    UCX_TAG_DATA = 1ULL << 63,
+    UCX_TAG_MASK = 1ULL << 63
+  };
 
   bool IsDataMsg(Message &msg) {
     return IsValidPushpull(msg) &&
@@ -545,21 +639,25 @@ class UCXVan : public Van {
     return *(reinterpret_cast<uint64_t*>(keys.data()));
   }
 
-  char *GetRxBuffer(uint64_t key, size_t size, bool push) {
+  char *GetRxBuffer(uint64_t key, int node_id, size_t size, bool push) {
     if (!push) {
       // Must be receive for pulled data, get the address used for push
+      std::lock_guard<std::mutex> lock(w_pool_mtx_);
       auto addr = w_pool_.find(key);
       CHECK(addr != w_pool_.end());
       return addr->second;
     }
 
-    auto it = rpool_.find(key);
-    if (it != rpool_.end()) {
-      if (size <= it->second.second) {
-        return it->second.first;
+    if (rpool_.find(key) != rpool_.end()) {
+      auto it = rpool_[key].find(node_id);
+      if (it != rpool_[key].end()) {
+        if (size <= it->second.second) {
+          return it->second.first;
+        } else {
+          // cached buffer is smaller than requested - free it and reallocate
+          free(it->second.first);
+        }
       }
-      // cached buffer is smaller than requested - free it and reallocate
-      free(it->second.first);
     }
 
     char *buf;
@@ -568,7 +666,7 @@ class UCXVan : public Van {
     CHECK(!ret) << "posix_memalign error: " << strerror(ret);
     CHECK(buf);
     memset(buf, 0, size);
-    rpool_[key] = std::make_pair(buf, size);
+    rpool_[key][node_id] = std::make_pair(buf, size);
 
     return buf;
   }
@@ -584,9 +682,11 @@ class UCXVan : public Van {
       }
 
       do {
-        // Match only 32 bits of tag. Higher bits of tag carry sender id
-        msg = ucp_tag_probe_nb(worker_, UCX_TAG_META,
-                               std::numeric_limits<uint32_t>::max(), 1, &info);
+        /* Only match the highest bit of tag. */
+        msg = ucp_tag_probe_nb(worker_,
+                               static_cast<ucp_tag_t>(Tags::UCX_TAG_META),
+                               static_cast<ucp_tag_t>(Tags::UCX_TAG_MASK),
+                               1, &info);
         if (msg != NULL) {
           // Some meta data is ready, post a receive to get it
           UCXRequest *meta_req = PostRecvMeta(msg, &info);
@@ -632,7 +732,7 @@ class UCXVan : public Van {
       UCX_LOG(2, "sending meta to ep(" << msg.meta.recver << ") " << ep);
     }
 
-    ucp_tag_t tag       = MakeTag(my_node_.id, UCX_TAG_META);
+    ucp_tag_t tag       = MakeTag(my_node_.id, Tags::UCX_TAG_META, msg.meta.key);
     ucs_status_ptr_t st = ucp_tag_send_nb(ep, buf, count, dt, tag, TxReqCompletedCb);
     if (UCS_PTR_IS_PTR(st)) {
       UCXRequest *req    = reinterpret_cast<UCXRequest*>(st);
@@ -652,19 +752,22 @@ class UCXVan : public Van {
   void PostRecvData(UCXRequest *meta_req) {
     RawMeta *meta = reinterpret_cast<RawMeta*>(meta_req->data.raw_meta);
     int val_len   = meta->val_len;
-    if (val_len == 0) {
-      UCX_LOG(2, " rx just meta, sender " << meta_req->data.sender);
+    if (val_len == 0 || meta->option == UCX_OPTION_META) {
+      UCX_LOG(2, " rx just meta, sender " << meta_req->data.sender << " val_len: " << val_len);
       CHECK_EQ(meta_req->data.buffer, nullptr);
       recv_buffers_.Push(meta_req->data);
-    } else if (meta->option) {
+    } else if (meta->option > 0) {
       UCX_LOG(2, " rx meta with data, data len: " << val_len);
-      meta_req->data.buffer = GetRxBuffer(meta->key, val_len, meta->push);
+      meta_req->data.buffer = GetRxBuffer(meta->key, meta_req->data.sender,
+                                          val_len, meta->push);
       memcpy(meta_req->data.buffer, meta_req->data.raw_meta + meta->option, val_len);
       recv_buffers_.Push(meta_req->data);
     } else {
       // Add sender id to the tag to ensure message received from the proper node
-      char *buf       = GetRxBuffer(meta->key, val_len, meta->push);
-      ucp_tag_t tag   = MakeTag(meta_req->data.sender, UCX_TAG_DATA);
+      char *buf       = GetRxBuffer(meta->key, meta_req->data.sender,
+                                    val_len, meta->push);
+      ucp_tag_t tag   = MakeTag(meta_req->data.sender, Tags::UCX_TAG_DATA,
+                                meta->key);
       UCXRequest *req = (UCXRequest*)ucp_tag_recv_nb(worker_, buf, val_len,
                                                      ucp_dt_make_contig(1), tag,
                                                      std::numeric_limits<uint64_t>::max(),
@@ -744,12 +847,27 @@ class UCXVan : public Van {
     UCX_REQUEST_FREE(req); // can release request back to UCX now
   }
 
-  ucp_tag_t MakeTag(int node_id, ucp_tag_t tag) {
-    return ((ucp_tag_t)node_id << 32) | tag;
+  /**
+   * from the left to the right:
+   * 1 bit for UCX_TAG_META/UCX_TAG_DATA
+   * 15 bits for the sender node_id
+   * 48 bits for the key
+   */
+  ucp_tag_t MakeTag(int node_id, Tags tag, uint64_t key) {
+    ucp_tag_t ret = 0;
+
+    assert(((ucp_tag_t)node_id & 0xFFFFFFFFFFFF8000) == 0);
+    ret = (ucp_tag_t)node_id << 48;
+    ret &= ~static_cast<uint64_t>(Tags::UCX_TAG_MASK);
+    ret |= static_cast<uint64_t>(tag);
+    ret |= (key & 0xFFFFFFFFFFFF);
+
+    return ret;
   }
 
   int NodeIdFromTag(ucp_tag_t tag) {
-    return (int)(tag >> 32);
+    tag &= ~static_cast<uint64_t>(Tags::UCX_TAG_MASK);
+    return (int)(tag >> 48);
   }
 
   static void RequestInit(void *request) {
@@ -759,6 +877,7 @@ class UCXVan : public Van {
     req->completed     = false;
   }
 
+  typedef std::unordered_map<int, std::pair<char*, size_t>> MemAddresses;
   ucp_context_h                                     context_;
   ucp_worker_h                                      worker_;
   ucp_listener_h                                    listener_;
@@ -766,9 +885,20 @@ class UCXVan : public Van {
   ThreadsafeQueue<UCXBuffer>                        recv_buffers_;
   UCXEndpointsPool                                  ep_pool_;
   std::unordered_map<Key, char*>                    w_pool_;
+  std::mutex                                        w_pool_mtx_;
   std::atomic<bool>                                 should_stop_;
-  std::unordered_map<Key, std::pair<char*, size_t>> rpool_;
+  std::unordered_map<Key, MemAddresses>             rpool_;
   int                                               short_send_thresh_;
+  // send/recv sequence id
+  std::unordered_map<int, int>                      next_send_sids_;
+  std::unordered_map<int, int>                      next_recv_sids_;
+  std::mutex                                        sid_mtx_;
+  // buffers for message whose callback is invoked early
+  std::unordered_map<int, std::unordered_map<int, UCXBuffer>> recv_sid_buffers_;
+  ThreadsafeQueue<UCXBuffer>                        ordered_recv_buffers_;
+  std::unique_ptr<std::thread>                      reorder_thread_;
+  int                                               force_request_order_;
+
 };  // class UCXVan
 
 };  // namespace ps
