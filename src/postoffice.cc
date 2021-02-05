@@ -89,9 +89,9 @@ void Postoffice::Start(int customer_id, const char* argv0, const bool do_barrier
   if (do_barrier) Barrier(customer_id, kWorkerGroup + kServerGroup + kScheduler);
 }
 
-void Postoffice::StartWithGlobalRank(int customer_id, int global_rank, const char* argv0, const bool do_barrier) {
-  //regist rank
-  global_rank_ = global_rank;
+void Postoffice::StartWithRank(int customer_id, int preferred_rank, const char* argv0, const bool do_barrier) {
+  // set preferred rank
+  preferred_rank_ = preferred_rank;
   Postoffice::Start(customer_id, argv0, do_barrier);
 }
 

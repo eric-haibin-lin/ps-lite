@@ -47,8 +47,14 @@ inline void StartAsync(int customer_id, const char *argv0 = nullptr) {
   Postoffice::Get()->Start(customer_id, argv0, false);
 }
 
-inline void StartAsyncWithGlobalRank(int customer_id, int global_rank, const char *argv0 = nullptr) {
-  Postoffice::Get()->StartWithGlobalRank(customer_id, global_rank, argv0, false);
+/**
+ * \brief start the system
+ *
+ * This function will NOT block.
+ * \param argv0 the program name, used for logging
+ */
+inline void StartAsyncWithRank(int customer_id, int preferred_rank, const char *argv0 = nullptr) {
+  Postoffice::Get()->StartWithRank(customer_id, preferred_rank, argv0, false);
 }
 
 /**

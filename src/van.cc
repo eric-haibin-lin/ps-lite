@@ -183,79 +183,64 @@ void Van::ProcessAddNodeCommandAtScheduler(Message *msg, Meta *nodes, Meta *reco
                });
     }
 
-    // make sure RANK all continousloy starting from 0 to num_servers and num_worker.
-    // woker and server count it seperately 
-    // ordered set to test whether it is continous
-    bool enable_global_rank = false;
-    if (Environment::Get()->find("ENABLE_GLOBAL_RANK") &&
-        atoi(Environment::Get()->find("ENABLE_GLOBAL_RANK")) == 1) { 
-      enable_global_rank = true;
-      std::set<int> servers_rank_set;
-      std::set<int> workers_rank_set;
+    bool with_preferred_rank = false;
+    for (auto &node: nodes->control.node) {
+      if (node.aux_id != -1) {
+        LOG(INFO) << "Preferred rank detected for node " << node.DebugString();
+        with_preferred_rank = true;
+      }
+    }
+
+    // make sure ranks starts from 0 to num_servers and num_worker.
+    if (with_preferred_rank) {
+      std::unordered_set<int> server_ranks;
+      std::unordered_set<int> worker_ranks;
       for (auto &node: nodes->control.node){
-        if(node.role==Node::SERVER){
-          CHECK_EQ(servers_rank_set.find(node.aux_id),servers_rank_set.end())<<"rank must be identical";
-          servers_rank_set.insert(node.aux_id);
-        }else if(node.role==Node::WORKER){
-          CHECK_EQ(workers_rank_set.find(node.aux_id),workers_rank_set.end())<<"rank must be identical";
-          workers_rank_set.insert(node.aux_id);
+        if (node.role == Node::SERVER) {
+          CHECK_EQ(server_ranks.find(node.aux_id), server_ranks.end())
+            << "rank must be identical: " << node.DebugString();
+          server_ranks.insert(node.aux_id);
+        } else if (node.role==Node::WORKER) {
+          CHECK_EQ(worker_ranks.find(node.aux_id), worker_ranks.end())
+            << "rank must be identical: " << node.DebugString();
+          worker_ranks.insert(node.aux_id);
+        } else{
+          LOG(FATAL) << "unrecognized node role " << node.DebugString();
         }
-        else{
-          LOG(FATAL) << "unrecognized node role " << node.role;
-        }
       }
 
-      //test continousity
-      int _num_servers = Postoffice::Get()->num_servers();
-      int continous_incre = 0;
-      for(auto it=servers_rank_set.begin(); it!=servers_rank_set.end(); ++it){
-        CHECK_EQ(*it, continous_incre) << "self provided server rank must be continous and start from 0. "
-          << *it << " v.s. " << continous_incre;
-        continous_incre++;
+      // check continousity
+      int num_servers = Postoffice::Get()->num_servers();
+      for (int i = 0; i < num_servers; ++i) {
+        CHECK(server_ranks.find(i) != server_ranks.end()) << i;
       }
-      CHECK_EQ(continous_incre,_num_servers)<<"highest server rank must equal to (num_server - 1)";
+      CHECK(server_ranks.size() == num_servers);
 
-      int _num_workers = Postoffice::Get()->num_workers();
-      continous_incre = 0;
-      for(auto it=workers_rank_set.begin(); it!=workers_rank_set.end(); ++it){
-        CHECK_EQ(*it,continous_incre++)<<"self provided worker rank must be continous and start from 0";
+      int num_workers = Postoffice::Get()->num_workers();
+      for (int i = 0; i < num_workers; ++i) {
+        CHECK(worker_ranks.find(i) != worker_ranks.end()) << i;
       }
-      CHECK_EQ(continous_incre,_num_workers)<<"highest worker rank must equal to (num_server - 1)";
-
+      CHECK(worker_ranks.size() == num_workers);
     }
 
 
     // assign node rank
     for (auto &node : nodes->control.node) {
       std::string node_host_ip = node.hostname + ":" + std::to_string(node.port);
+      int id = -1;
+      if (node.role == Node::SERVER) {
+        id = Postoffice::ServerRankToID(with_preferred_rank ? node.aux_id : num_servers_);
+      } else {
+        id = Postoffice::WorkerRankToID(with_preferred_rank ? node.aux_id : num_workers_);
+      }
       if (connected_nodes_.find(node_host_ip) == connected_nodes_.end()) {
         CHECK_EQ(node.id, Node::kEmpty);
-        //using RANK parsing from pytorch as rank instead of index of sorted hosts
-        int id;
-        if (enable_global_rank) {
-          //CHECK_NOTNULL(node.aux_id);
-          id = node.role == Node::SERVER ? Postoffice::ServerRankToID(node.aux_id)
-                                           : Postoffice::WorkerRankToID(node.aux_id);
-        } else {
-          id = node.role == Node::SERVER ? Postoffice::ServerRankToID(num_servers_)
-                                           : Postoffice::WorkerRankToID(num_workers_);
-        }
         PS_VLOG(1) << "assign rank=" << id << " to node " << node.DebugString();
         node.id = id;
         Connect(node);
         Postoffice::Get()->UpdateHeartbeat(node.id, t);
         connected_nodes_[node_host_ip] = id;
       } else {
-        int id;
-        //using RANK parsing from pytorch as rank instead of index of sorted hosts
-        if (enable_global_rank) {
-          //CHECK_NOTNULL(node.aux_id);
-          id = node.role == Node::SERVER ? Postoffice::ServerRankToID(node.aux_id)
-                                           : Postoffice::WorkerRankToID(node.aux_id);
-        } else{
-          id = node.role == Node::SERVER ? Postoffice::ServerRankToID(num_servers_)
-                                           : Postoffice::WorkerRankToID(num_workers_);
-        }
         shared_node_mapping_[id] = connected_nodes_[node_host_ip];
         node.id = connected_nodes_[node_host_ip];
       }
@@ -536,15 +521,7 @@ void Van::Start(int customer_id, bool standalone) {
     // let the scheduler know myself
     Message msg;
     Node customer_specific_node = my_node_;
-    //using aux_id as RANK parsing from pytorch 
-    //get global rank from postoffice, because global only passed to postoffice layer.
-    //aux_id carries global rank, and aux_id will be send to scheduler to gather 
-    //and scatter to all servers and workers.
-    if(Environment::Get()->find("ENABLE_GLOBAL_RANK") 
-                                                 && atoi(Environment::Get()->find("ENABLE_GLOBAL_RANK"))==1){
-      customer_specific_node.aux_id = Postoffice::Get()->get_global_rank();
-    }
-
+    customer_specific_node.aux_id = Postoffice::Get()->preferred_rank();
     customer_specific_node.customer_id = customer_id;
     msg.meta.recver = kScheduler;
     msg.meta.control.cmd = Control::ADD_NODE;
