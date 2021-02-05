@@ -1,1 +1,0 @@
-bash ./run_benchmark_scheduler_provide_rank.sh 3 3 
