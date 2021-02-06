@@ -198,11 +198,11 @@ void Van::ProcessAddNodeCommandAtScheduler(Message *msg, Meta *nodes, Meta *reco
       for (auto &node: nodes->control.node){
         if (node.role == Node::SERVER) {
           CHECK_EQ(server_ranks.find(node.aux_id), server_ranks.end())
-            << "rank must be identical: " << node.DebugString();
+            << "rank must be unique: " << node.DebugString();
           server_ranks.insert(node.aux_id);
         } else if (node.role==Node::WORKER) {
           CHECK_EQ(worker_ranks.find(node.aux_id), worker_ranks.end())
-            << "rank must be identical: " << node.DebugString();
+            << "rank must be unique: " << node.DebugString();
           worker_ranks.insert(node.aux_id);
         } else{
           LOG(FATAL) << "unrecognized node role " << node.DebugString();
