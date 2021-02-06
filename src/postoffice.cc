@@ -91,6 +91,7 @@ void Postoffice::Start(int customer_id, const char* argv0, const bool do_barrier
 
 void Postoffice::StartWithRank(int customer_id, int preferred_rank, const char* argv0, const bool do_barrier) {
   // set preferred rank
+  CHECK(preferred_rank_ >= -1) << preferred_rank_;
   preferred_rank_ = preferred_rank;
   Postoffice::Start(customer_id, argv0, do_barrier);
 }
