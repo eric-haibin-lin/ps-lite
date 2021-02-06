@@ -324,7 +324,6 @@ void Van::UpdateLocalID(Message* msg, std::unordered_set<int>* deadnodes_set,
     if (my_node_.hostname == node.hostname && my_node_.port == node.port) {
       if (getenv("DMLC_RANK") == nullptr || my_node_.id == Meta::kEmpty) {
         SetNode(node);
-        //same with the RANK parsing from pytorch
         std::string rank = std::to_string(Postoffice::IDtoRank(node.id));
 #ifdef _MSC_VER
         _putenv_s("DMLC_RANK", rank.c_str());
