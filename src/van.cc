@@ -176,7 +176,7 @@ void Van::ProcessAddNodeCommandAtScheduler(Message *msg, Meta *nodes, Meta *reco
                 });
     } else {
       // sort the nodes according their ip and port
-      // no need to sort for p2p communication case, but sort might good for latter usage
+      // no need to sort for p2p communication case, but sort might be good for later usage
       std::sort(nodes->control.node.begin(), nodes->control.node.end(),
                [](const Node &a, const Node &b) {
                  return (a.hostname.compare(b.hostname) | (a.port < b.port)) > 0;
