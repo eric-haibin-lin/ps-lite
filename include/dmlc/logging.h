@@ -70,6 +70,9 @@ inline void InitLogging(const char *argv0) {
   // DO NOTHING
 }
 
+#ifndef _LOGGING_H_ // Avoid conflict with Glog
+#ifndef TENSORFLOW_CORE_PLATFORM_DEFAULT_LOGGING_H_
+
 // Always-on checking
 #define CHECK(x)                                                      \
   if (!(x))                                                           \
@@ -112,17 +115,20 @@ inline void InitLogging(const char *argv0) {
 #define DCHECK_NE(x, y) CHECK((x) != (y))
 #endif  // NDEBUG
 
+// Poor man version of VLOG
+#define VLOG(x) LOG_INFO.stream()
+
+#define LOG(severity) LOG_##severity.stream()
+#define LG LOG_INFO.stream()
+
+#endif // TENSORFLOW_CORE_PLATFORM_DEFAULT_LOGGING_H_ avoid conflict from tensorflow
+
 #define LOG_INFO dmlc::LogMessage(__FILE__, __LINE__)
 #define LOG_ERROR LOG_INFO
 #define LOG_WARNING LOG_INFO
 #define LOG_FATAL dmlc::LogMessageFatal(__FILE__, __LINE__)
 #define LOG_QFATAL LOG_FATAL
 
-// Poor man version of VLOG
-#define VLOG(x) LOG_INFO.stream()
-
-#define LOG(severity) LOG_##severity.stream()
-#define LG LOG_INFO.stream()
 #define LOG_IF(severity, condition) \
   !(condition) ? (void)0 : dmlc::LogMessageVoidify() & LOG(severity)
 
@@ -141,6 +147,8 @@ inline void InitLogging(const char *argv0) {
 
 // Poor man version of LOG_EVERY_N
 #define LOG_EVERY_N(severity, n) LOG(severity)
+
+#endif // _LOGGING_H_ from Glog
 
 class DateLogger {
  public:

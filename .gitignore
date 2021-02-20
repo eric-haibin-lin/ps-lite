@@ -20,3 +20,6 @@ recommonmark/
 test_benchmark
 stress_test_benchmark
 !/tests/*.cc
+
+.bundle
+bundle_lib
