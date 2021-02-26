@@ -755,10 +755,10 @@ class UCXVan : public Van {
  public:
 
   UCXVan(Postoffice* postoffice) : Van(postoffice), postoffice_(postoffice) {
-    setenv("UCX_USE_MT_MUTEX", "y", 0);
-    setenv("UCX_IB_NUM_PATHS", "2", 0);
-    setenv("UCX_SOCKADDR_CM_ENABLE", "y", 0);
-    setenv("UCX_RNDV_THRESH", "8k", 0);
+    //setenv("UCX_USE_MT_MUTEX", "y", 0);
+    //setenv("UCX_IB_NUM_PATHS", "2", 0);
+    //setenv("UCX_SOCKADDR_CM_ENABLE", "y", 0);
+    //setenv("UCX_RNDV_THRESH", "8k", 0);
     short_send_thresh_   = GetEnv("BYTEPS_UCX_SHORT_THRESH", 4096);
     force_request_order_ = GetEnv("BYTEPS_UCX_FORCE_REQ_ORDER", 0);
   }
