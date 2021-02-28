@@ -1,5 +1,6 @@
 export BINARY=${BINARY:-./tests/test_benchmark}
-export ARGS=${ARGS:-4096000 100000 1}
+export ARGS=${ARGS:-4096000 100000 2}
+export UCX_HOME=/opt/tiger/haibin.lin/ps-lite-test-benchmark/ucx_install
 
 set -x
 
@@ -10,8 +11,10 @@ function cleanup() {
 }
 trap cleanup EXIT
 # cleanup # cleanup on startup
+export DMLC_NUM_PORTS=1 
+export SKIP_DEV_ID_CHECK=1
 
-export DMLC_NUM_WORKER=${DMLC_NUM_WORKER:-1}
+export DMLC_NUM_WORKER=${DMLC_NUM_WORKER:-8}
 export DMLC_NUM_SERVER=$DMLC_NUM_WORKER
 export LD_LIBRARY_PATH=$CUDA_HOME/lib64:$UCX_HOME/lib:$LD_LIBRARY_PATH
 
@@ -46,25 +49,24 @@ then
     export DMLC_NODE_HOST=${NODE_ONE_IP}
     export UCX_RDMA_CM_SOURCE_ADDRESS=${NODE_ONE_IP}
 
-    DMLC_ROLE=scheduler $BINARY $ARGS
-    DMLC_ROLE=worker $BINARY $ARGS &
+    DMLC_ROLE=scheduler $BINARY $ARGS &
     DMLC_ROLE=server $BINARY $ARGS &
+    DMLC_ROLE=worker $BINARY $ARGS &
 elif [ $1 == "local" ]
 then
-    # launch scheduler
     echo "This is a local node."
     export DMLC_NODE_HOST=${NODE_ONE_IP}
     export UCX_RDMA_CM_SOURCE_ADDRESS=${NODE_ONE_IP}
 
-    DMLC_ROLE=worker $BINARY $ARGS &
     DMLC_ROLE=server $BINARY $ARGS &
+    DMLC_ROLE=worker $BINARY $ARGS &
 else
     echo "This is a remote node."
     export DMLC_NODE_HOST=${NODE_TWO_IP}
     export UCX_RDMA_CM_SOURCE_ADDRESS=${NODE_TWO_IP}
-    
-    DMLC_ROLE=worker $BINARY $ARGS &
+
     DMLC_ROLE=server $BINARY $ARGS &
+    DMLC_ROLE=worker $BINARY $ARGS &
 fi
 
 wait
