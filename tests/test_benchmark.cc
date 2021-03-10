@@ -308,6 +308,7 @@ void StartServer(int argc, char *argv[]) {
       }
     }
   }
+  LOG(INFO) << "finish registration.";
   //ps::Postoffice::Get()->Barrier(0, kWorkerGroup + kServerGroup);
   //ps::Postoffice::Get()->Barrier(0, kServerGroup);
 }
@@ -538,6 +539,7 @@ int main(int argc, char *argv[]) {
       LOG(INFO) << "Thread " << i << " is done.";
     }
   }
+  LOG(INFO) << "for debug";
   // stop system
   Finalize(0, role, true);
   return 0;
