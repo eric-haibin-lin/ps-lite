@@ -309,7 +309,7 @@ void StartServer(int argc, char *argv[]) {
     }
   }
   //ps::Postoffice::Get()->Barrier(0, kWorkerGroup + kServerGroup);
-  ps::Postoffice::Get()->Barrier(0, kServerGroup);
+  //ps::Postoffice::Get()->Barrier(0, kServerGroup);
 }
 
 void push_pull(KVWorker<char>* kv,
@@ -414,10 +414,10 @@ void RunWorker(int argc, char *argv[], KVWorker<char>* kv, int tid) {
   GenerateLens(total_key_num, len, &server_lens);
 
   // place a barrier to make sure the server has all the buffers registered.
-  if (enable_recv_buffer) {
+  //if (enable_recv_buffer) {
     //ps::Postoffice::Get()->Barrier(0, kWorkerGroup + kServerGroup);
-    ps::Postoffice::Get()->Barrier(0, kServerGroup);
-  }
+  //  ps::Postoffice::Get()->Barrier(0, kServerGroup);
+  //}
 
   // init push, do not count this into time cost
   for (int key = 0; key < total_key_num; key++) {
@@ -432,13 +432,13 @@ void RunWorker(int argc, char *argv[], KVWorker<char>* kv, int tid) {
       for (int i = 0; i < repeat; ++i) {
         auto start = std::chrono::high_resolution_clock::now();
         for (int server = 0; server < num_servers; server++) {
-          //if (my_rank != server){
+          if (my_rank != server){
             auto keys = server_keys[server];
             auto lens = server_lens[server];
             auto vals = server_vals[server];
 
             kv->Wait(kv->ZPush(keys, vals, lens));
-          //}
+          }
         }
         auto end = std::chrono::high_resolution_clock::now();
         accumulated_ms += (end - start).count(); // ns
@@ -453,13 +453,13 @@ void RunWorker(int argc, char *argv[], KVWorker<char>* kv, int tid) {
       for (int i = 0; i < repeat; ++i) {
         auto start = std::chrono::high_resolution_clock::now();
         for (int server = 0; server < num_servers; server++) {
-          //if (my_rank != server){
+          if (my_rank != server){
             auto keys = server_keys[server];
             auto lens = server_lens[server];
             auto vals = server_vals[server];
 
             kv->Wait(kv->ZPull(keys, &vals, &lens));
-          //}
+          }
         }
         auto end = std::chrono::high_resolution_clock::now();
         accumulated_ms += (end - start).count(); // ns
