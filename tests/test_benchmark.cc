@@ -266,6 +266,7 @@ void GenerateLens(int total_key_num, int len, std::vector<SArray<int>>* server_l
 
 void StartServer(int argc, char *argv[]) {
   //if (!IsServer()) return;
+  if (IsScheduler()) return;
   debug_mode_ = Environment::Get()->find("DEBUG_MODE") ? true : false;
 
   auto server = new KVServer<char>(0);
@@ -520,22 +521,18 @@ int main(int argc, char *argv[]) {
   }
 
   // setup server nodes
-  //StartServer(argc, argv);
+  StartServer(argc, argv);
   // run worker nodes
-  //if (!IsServer() && !IsScheduler()) {
   if (!IsScheduler()) {
     const int nthread = env2int("BENCHMARK_NTHREAD", 1);
     LOG(INFO) << "number of threads for the same worker = " << nthread;
     KVWorker<char> kv(0, 0);
     std::vector<std::thread> threads;
-    std::vector<std::thread> server_threads;
     for (int i = 0; i < nthread; ++i) {
       threads.emplace_back(RunWorker, argc, argv, &kv, threads.size());
-      server_threads.emplace_back(StartServer, argc, argv);
     }
     for (int i = 0; i < nthread; ++i) {
       threads[i].join();
-      server_threads[i].join();
       LOG(INFO) << "Thread " << i << " is done.";
     }
   }
