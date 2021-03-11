@@ -310,7 +310,7 @@ void StartServer(int argc, char *argv[]) {
   }
   LOG(INFO) << "finish registration.";
   //ps::Postoffice::Get()->Barrier(0, kWorkerGroup + kServerGroup);
-  //ps::Postoffice::Get()->Barrier(0, kServerGroup);
+  ps::Postoffice::Get()->Barrier(0, kServerGroup);
 }
 
 void push_pull(KVWorker<char>* kv,
@@ -415,10 +415,10 @@ void RunWorker(int argc, char *argv[], KVWorker<char>* kv, int tid) {
   GenerateLens(total_key_num, len, &server_lens);
 
   // place a barrier to make sure the server has all the buffers registered.
-  //if (enable_recv_buffer) {
+  if (enable_recv_buffer) {
     //ps::Postoffice::Get()->Barrier(0, kWorkerGroup + kServerGroup);
-  //  ps::Postoffice::Get()->Barrier(0, kServerGroup);
-  //}
+    ps::Postoffice::Get()->Barrier(0, kServerGroup);
+  }
 
   // init push, do not count this into time cost
   for (int key = 0; key < total_key_num; key++) {
