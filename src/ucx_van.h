@@ -609,25 +609,20 @@ public:
 
     if (ep == nullptr) return UCS_STATUS_PTR(UCS_ERR_NOT_CONNECTED);
 
+    send_param.op_attr_mask = UCP_OP_ATTR_FIELD_CALLBACK;
     if (tag == ps::Tags::UCX_TAG_META) {
         // Initialize completion callback for sending meta data to free the tx
         // buffer. It is not needed for real data, because tx buffer is managed
         // by PS-Lite.
-        send_param.op_attr_mask = UCP_OP_ATTR_FIELD_CALLBACK |
-                                  UCP_OP_ATTR_FIELD_USER_DATA;
-        send_param.cb.send      = TxReqCompletedCb;
-        send_param.user_data    = buf;
+        send_param.op_attr_mask |= UCP_OP_ATTR_FIELD_USER_DATA;
+        send_param.cb.send       = TxMetaCompletedCb;
+        send_param.user_data     = buf;
     } else {
         CHECK_EQ(tag,  ps::Tags::UCX_TAG_DATA);
-        send_param.op_attr_mask = 0ul;
+        send_param.cb.send       = TxDataCompletedCb;
     }
 
-    ucs_status_ptr_t st = ucp_tag_send_nbx(ep, buf, count, stag, &send_param);
-    if (UCS_PTR_IS_PTR(st)) {
-        ucp_request_free(st);
-    }
-
-    return st;
+    return ucp_tag_send_nbx(ep, buf, count, stag, &send_param);
   }
 
   void Cleanup() {
@@ -760,13 +755,22 @@ private:
     UCX_REQUEST_FREE(req); // can release request back to UCX now
   }
 
-  static void TxReqCompletedCb(void *request, ucs_status_t status, void *user_data)
+  static void TxMetaCompletedCb(void *request, ucs_status_t status, void *user_data)
+  {
+    UCXRequest *req = reinterpret_cast<UCXRequest*>(request);
+
+    CHECK_STATUS(status) << "TX meta request completed with " << ucs_status_string(status);
+
+    delete [] user_data;
+
+    UCX_REQUEST_FREE(req);
+  }
+
+  static void TxDataCompletedCb(void *request, ucs_status_t status, void *user_data)
   {
     UCXRequest *req = reinterpret_cast<UCXRequest*>(request);
 
     CHECK_STATUS(status) << "TX request completed with " << ucs_status_string(status);
-
-    delete [] user_data;
 
     UCX_REQUEST_FREE(req);
   }
