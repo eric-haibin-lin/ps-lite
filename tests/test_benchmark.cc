@@ -433,13 +433,11 @@ void RunWorker(int argc, char *argv[], KVWorker<char>* kv, int tid) {
       for (int i = 0; i < repeat; ++i) {
         auto start = std::chrono::high_resolution_clock::now();
         for (int server = 0; server < num_servers; server++) {
-          if (my_rank != server){
             auto keys = server_keys[server];
             auto lens = server_lens[server];
             auto vals = server_vals[server];
 
             kv->Wait(kv->ZPush(keys, vals, lens));
-          }
         }
         auto end = std::chrono::high_resolution_clock::now();
         accumulated_ms += (end - start).count(); // ns
@@ -454,13 +452,11 @@ void RunWorker(int argc, char *argv[], KVWorker<char>* kv, int tid) {
       for (int i = 0; i < repeat; ++i) {
         auto start = std::chrono::high_resolution_clock::now();
         for (int server = 0; server < num_servers; server++) {
-          if (my_rank != server){
             auto keys = server_keys[server];
             auto lens = server_lens[server];
             auto vals = server_vals[server];
 
             kv->Wait(kv->ZPull(keys, &vals, &lens));
-          }
         }
         auto end = std::chrono::high_resolution_clock::now();
         accumulated_ms += (end - start).count(); // ns
