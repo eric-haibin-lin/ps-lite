@@ -435,6 +435,9 @@ int main(int argc, char *argv[]) {
   // disable multi-threaded processing first
   setenv("ENABLE_SERVER_MULTIPULL", "0", 1);
 
+  auto test_meta_str = Environment::Get()->find("TEST_META");
+  const int test_meta = test_meta_str ? atoi(test_meta_str) : 0;
+
   auto v = Environment::Get()->find("BENCHMARK_NTHREAD");
   const int nthread = v ? atoi(v) : 1;
   LOG(INFO) << "number of threads for the same worker = " << nthread;
@@ -443,7 +446,12 @@ int main(int argc, char *argv[]) {
   const char* val = CHECK_NOTNULL(Environment::Get()->find("DMLC_ROLE"));
   std::string role_str(val);
   Node::Role role = GetRole(role_str);
-  int rank = -1;
+  auto node_id_str = Environment::Get()->find("BYTEPS_NODE_ID");
+  CHECK(node_id_str) << "Please set BYTEPS_NODE_ID";
+  int node_id = atoi(node_id_str);
+
+  int rank = node_id;
+
   LOG(INFO) << "PS role = " << role_str;
   if (role == Node::SCHEDULER) {
     StartPS(0, role, rank, true);
@@ -468,12 +476,71 @@ int main(int argc, char *argv[]) {
     auto global_session_size = nthread * num_node;
     int global_gpu_size = local_gpu_size * num_node;
 
-    auto node_id_str = Environment::Get()->find("BYTEPS_NODE_ID");
-    CHECK(node_id_str) << "Please set BYTEPS_NODE_ID";
-    int node_id = atoi(node_id_str);
-
     bool is_global_root = (node_id == 0);
-    InitWorker(&kv, len, global_session_size, global_gpu_size, num_servers, is_global_root);
+    if (!test_meta) {
+      InitWorker(&kv, len, global_session_size, global_gpu_size, num_servers, is_global_root);
+    } else {
+      int localSize = 2;
+      int workerNum = num_node;
+      // keys
+      std::vector<ps::Key> pskeys(num_node);
+      std::vector<ps::SArray<ps::Key>> keys_array;
+
+      // lens
+      std::vector<int> pslens(num_node);
+      std::vector<ps::SArray<int>> lens_array;
+
+      // vals
+      std::vector<ps::SArray<char>> vals_array;
+      std::vector<int> data_to_send(localSize);
+
+      auto krs = ps::Postoffice::Get()->GetServerKeyRanges();
+      for (int i = 0; i < num_node; i++) {
+        ps::Key key = (i << 16) + 0x0000;
+        int server = i;
+
+        // keys
+        pskeys[i] = krs[server].begin() + key;
+        ps::SArray<ps::Key> keys;
+        keys.reset(&pskeys[i], 1, [](void*) {});
+        keys_array.push_back(keys);
+
+        // lens
+        pslens[i] = sizeof(int) * localSize;
+        ps::SArray<int> lens;
+        lens.reset(&pslens[i], 1, [](void*) {});
+        lens_array.push_back(lens);
+
+        // vals
+        ps::SArray<char> vals;
+        vals.reset((char*) data_to_send.data(), localSize * sizeof(int), [](void*) {});
+        vals_array.push_back(vals);
+      }
+
+      // Push once to the associated server
+      {
+        int server = node_id;
+        auto keys = keys_array[server];
+        auto vals = vals_array[server];
+        auto lens = lens_array[server];
+        kv.Wait(kv.ZPush(keys, vals, lens));
+      }
+
+      ps::Postoffice::Get()->Barrier(0, ps::kServerGroup);
+
+      // Pull the embedding buffer length of other workers
+      for (int i = 0; i < workerNum; i++) {
+        if (i == rank) continue;  // skip myself
+        int server = i;
+        auto keys = keys_array[server];
+        auto vals = vals_array[server];
+        auto lens = lens_array[server];
+        kv.Wait(kv.ZPull(keys, &vals, &lens));
+      }
+      LOG(INFO) << "DONE";
+      Finalize(0, role, true);
+      return 0;
+    }
   }
 
   std::vector<std::thread> threads;
