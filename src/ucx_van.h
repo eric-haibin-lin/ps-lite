@@ -22,6 +22,7 @@
 #include <netdb.h>
 #include <queue>
 #include <set>
+#include <numa.h>
 
 #if DMLC_USE_CUDA
 #include <cuda_runtime.h>
@@ -397,13 +398,20 @@ public:
 //    the memory used for push)
 class UCXRecvPool {
 public:
-  UCXRecvPool() {}
+  UCXRecvPool(int numa_aware) : numa_aware_(numa_aware) {}
 
   ~UCXRecvPool() {
     for (auto& it : rpool_) {
       for (auto& it2 : it.second) {
         if (!it2.second.external) {
-          free(it2.second.address);
+          if (numa_aware_ != -1) {
+            // TODO: store size to avoid leaks
+            int fake_size = 1;
+            // XXX use a fake size. This will lead to memory leaks.
+            numa_free(it2.second.address, fake_size);
+          } else {
+            free(it2.second.address);
+          }
         }
       }
     }
@@ -432,8 +440,15 @@ public:
 
     char *buf;
     size_t page_size = sysconf(_SC_PAGESIZE);
-    int ret          = posix_memalign((void**)&buf, page_size, size);
-    CHECK(!ret) << "posix_memalign error: " << strerror(ret);
+    if (numa_aware_ == -1) {
+      int ret          = posix_memalign((void**)&buf, page_size, size);
+      CHECK(!ret) << "posix_memalign error: " << strerror(ret);
+    } else {
+      // numa-aware allocation
+      // void *numa_alloc_onnode(size_t size, int node);
+      // void numa_free(void *start, size_t size);
+      buf = (char*)numa_alloc_onnode(size, numa_aware_);
+    }
     CHECK(buf);
     memset(buf, 0, size);
     rpool_[key][node_id] = UCXAddress(buf, size, false);
@@ -450,7 +465,15 @@ public:
       if ((it != rpool_[key].end()) && (!it->second.external)) {
         // Found cached buffer allocated by UCX Van, need to free it to avoid
         // memory leak
-        free(it->second.address);
+        if (numa_aware_ != -1) {
+          // void numa_free(void *start, size_t size);
+          // TODO: store size to avoid leaks
+          int fake_size = 1;
+          // XXX use a fake size. This will lead to memory leaks.
+          numa_free(it->second.address, fake_size);
+        } else {
+          free(it->second.address);
+        }
       }
     }
 
@@ -487,6 +510,7 @@ private:
   // rx buffer pool: key -> pool of node_ids
   std::unordered_map<Key, MemAddresses>             rpool_;
   std::mutex                                        w_pool_mtx_;
+  int                                               numa_aware_ = -1;
 };
 
 // This class represent UCX communication instance. It maintains UCX context,
@@ -777,6 +801,8 @@ class UCXVan : public Van {
   UCXVan(Postoffice* postoffice) : Van(postoffice), postoffice_(postoffice) {
     short_send_thresh_   = GetEnv("BYTEPS_UCX_SHORT_THRESH", 0);
     force_request_order_ = GetEnv("BYTEPS_UCX_FORCE_REQ_ORDER", 0);
+    numa_aware_ = GetEnv("BYTEPS_UCX_NUMA_AWARE", -1);
+    LOG(INFO) << "BYTEPS_UCX_NUMA_AWARE = " << numa_aware_;
   }
 
   Postoffice* postoffice_;
@@ -794,7 +820,7 @@ class UCXVan : public Van {
     start_mu_.lock();
     should_stop_ = false;
 
-    rx_pool_.reset(new UCXRecvPool());
+    rx_pool_.reset(new UCXRecvPool(numa_aware_));
     start_mu_.unlock();
 
     if (!standalone) Van::Start(customer_id, false);
@@ -1129,6 +1155,7 @@ class UCXVan : public Van {
   ThreadsafeQueue<UCXBuffer>                           ordered_recv_buffers_;
   std::unique_ptr<std::thread>                         reorder_thread_;
   int                                                  force_request_order_;
+  int                                                  numa_aware_;
 };  // class UCXVan
 
 };  // namespace ps

@@ -45,10 +45,13 @@ endif
 ifeq ($(USE_UCX), 1)
 LIBS += -lucp -luct -lucs -lucm
 CFLAGS += -DDMLC_USE_UCX
-	ifdef UCX_PATH
-	LIBS += -L$(UCX_PATH)/lib
-	INCPATH += -I$(UCX_PATH)/include
-	endif
+ifdef UCX_PATH
+LIBS += -L$(UCX_PATH)/lib
+INCPATH += -I$(UCX_PATH)/include
+endif
+ifeq ($(USE_NUMA), 1)
+LIBS += -lnuma
+endif
 endif
 
 ifdef ASAN
