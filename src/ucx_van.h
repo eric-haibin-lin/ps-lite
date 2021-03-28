@@ -775,8 +775,17 @@ class UCXVan : public Van {
  public:
 
   UCXVan(Postoffice* postoffice) : Van(postoffice), postoffice_(postoffice) {
-    short_send_thresh_   = GetEnv("BYTEPS_UCX_SHORT_THRESH", 0);
+    short_send_thresh_   = GetEnv("BYTEPS_UCX_SHORT_THRESH", 4096);
     force_request_order_ = GetEnv("BYTEPS_UCX_FORCE_REQ_ORDER", 0);
+    if (!getenv("UCX_USE_MT_MUTEX")) {
+      LOG(FATAL) << "UCX_USE_MT_MUTEX is not set. Please export UCX_USE_MT_MUTEX=y";
+    }
+    if (!getenv("UCX_SOCKADDR_CM_ENABLE")) {
+      LOG(FATAL) << "UCX_SOCKADDR_CM_ENABLE is not set. Please export UCX_SOCKADDR_CM_ENABLE=y";
+    }
+    if (!getenv("UCX_RNDV_THRESH")) {
+      LOG(WARNING) << "UCX_RNDV_THRESH is not set. We recommend export UCX_RNDV_THRESH=8k";
+    }
   }
 
   Postoffice* postoffice_;
