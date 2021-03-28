@@ -233,10 +233,10 @@ void GenerateVals(int total_key_num, int worker_rank,
   }
 }
 
-void GenerateKeys(int total_key_num, std::vector<SArray<Key>>* server_keys) {
+void GenerateKeys(int total_key_num, std::vector<SArray<Key>>* server_keys, int tid = 0) {
   auto krs = ps::Postoffice::Get()->GetServerKeyRanges();
   const int num_servers = krs.size();
-  for (int key = 0; key < total_key_num; key++) {
+  for (int key = tid * 10000; key < total_key_num + tid * 10000; key++) {
     int server = key % num_servers;
     // page aligned keys
     void* ptr_key;
@@ -344,6 +344,7 @@ void push_pull(KVWorker<char>* kv,
   
   int cnt = 0;
   int total_cnt = 0;
+  auto my_rank = ps::Postoffice::Get()->my_rank();
   while (total_cnt < total_log_duration) {
     for (int key = 0; key < total_key_num; key++) {
       auto keys = server_keys[key];
@@ -376,7 +377,7 @@ void push_pull(KVWorker<char>* kv,
     if (cnt % log_duration != 0) continue;
 
     end = std::chrono::high_resolution_clock::now();
-    LL << "[" << tid << "]\tApplication goodput: "
+    LL << "[" << my_rank << "." << tid << "]\tApplication goodput: "
         << 8.0 * len * sizeof(char) * total_key_num * cnt / (end - start).count() 
         << " Gbps";
     cnt = 0;
@@ -407,7 +408,7 @@ void RunWorker(int argc, char *argv[], KVWorker<char>* kv, int tid) {
   std::vector<SArray<int>> server_lens;
 
   GenerateVals(total_key_num, my_rank, len, num_ports, &server_vals);
-  GenerateKeys(total_key_num, &server_keys);
+  GenerateKeys(total_key_num, &server_keys, tid);
   GenerateLens(total_key_num, len, &server_lens);
 
   // place a barrier to make sure the server has all the buffers registered.
