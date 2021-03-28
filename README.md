@@ -126,11 +126,9 @@ Note: This benchmark is only valid for RDMA.
 ```
 # push pull test
 NODE_ONE_IP=xxx NODE_TWO_IP=yyy \
-DMLC_NUM_PORTS=1 DMLC_NUM_GPU_DEV=0 DMLC_NUM_CPU_DEV=2 \
-TEST_NUM_GPU_WORKER=0 TEST_NUM_CPU_WORKER=2 \
-TEST_NUM_GPU_SERVER=0 TEST_NUM_CPU_SERVER=2 \
+DMLC_NUM_PORTS=1 DMLC_NUM_GPU_DEV=0 DMLC_NUM_CPU_DEV=1 \
 UCX_MAX_RNDV_RAILS=1 SKIP_DEV_ID_CHECK=1 \
-ENABLE_RECV_BUFFER=1 taskset -c 0-31 bash ./test.sh (local|remote)
+ENABLE_RECV_BUFFER=1 bash ./test.sh (local|remote)
 
 # gather scatter test
 NODE_ONE_IP=xxx NODE_TWO_IP=yyy bash ./test_stress.sh

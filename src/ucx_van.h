@@ -786,6 +786,9 @@ class UCXVan : public Van {
     if (!getenv("UCX_RNDV_THRESH")) {
       LOG(WARNING) << "UCX_RNDV_THRESH is not set. We recommend export UCX_RNDV_THRESH=8k";
     }
+    if (!getenv("UCX_IB_TRAFFIC_CLASS")) {
+      LOG(WARNING) << "UCX_IB_TRAFFIC_CLASS is not set. RDMA traffic class may be incorrect";
+    }
   }
 
   Postoffice* postoffice_;
@@ -849,6 +852,8 @@ class UCXVan : public Van {
     // Create separate UCX context for every device. If device is GPU, set the
     // corresponding cuda device before UCX context creation. This way UCX will
     // automatically select the most optimal NICs for using with this device.
+    CHECK(devs.size() == node.num_ports)
+      << "num_cpu_dev + num_gpu_dev != num_ports";
     for (int i = 0; i < node.num_ports; ++i) {
       node.dev_types[i] = devs[i].first;
       node.dev_ids[i] = devs[i].second;
