@@ -71,6 +71,8 @@ struct UCXBuffer {
   char       *buffer;
   int        sender;
   bool       should_stop = false;
+  bool       is_fake_resp = false;
+  uint64_t   key;
 };
 
 struct UCXRequest {
@@ -818,6 +820,9 @@ class UCXVan : public Van {
     if (!getenv("UCX_IB_TRAFFIC_CLASS")) {
       LOG(WARNING) << "UCX_IB_TRAFFIC_CLASS is not set. RDMA traffic class may be incorrect";
     }
+    auto no_response_str = getenv("BYTEPS_UCX_NO_RESPONSE");
+    no_response_ = no_response_str ? atoi(no_response_str) : false;
+    LOG(INFO) << " BYTEPS_UCX_NO_RESPONSE = " << no_response_;
   }
 
   Postoffice* postoffice_;
@@ -929,6 +934,7 @@ class UCXVan : public Van {
     CHECK_NE(id, Meta::kEmpty);
 
     msg.meta.option = UCX_OPTION_META;
+    bool is_push_request = false;
 
     if (IsValidPushpull(msg)) {
       if (msg.meta.request) {
@@ -940,6 +946,7 @@ class UCXVan : public Van {
         msg.meta.sid        = sid;
       }
       if (IsDataMsg(msg)) {
+        is_push_request = msg.meta.push && msg.meta.request;
         msg.meta.val_len = msg.data[1].size();
         msg.meta.option  = UCX_OPTION_DATA;
       } else if (!msg.meta.push && msg.meta.request) {
@@ -959,6 +966,12 @@ class UCXVan : public Van {
     }
     // meta with data
     if (len == GetPackMetaLen(msg.meta) + msg.meta.val_len) {
+      if (is_push_request && no_response_) {
+        // compose a push response msg if needed
+        UCXBuffer buff;
+        GenerateRespBuffMsg(msg, &buff);
+        rx_pool_->PushOrdered(buff);
+      }
       return len + msg.meta.data_size; // No data, or data was bundled with meta
     }
     // data
@@ -973,7 +986,12 @@ class UCXVan : public Van {
       return -1;
     }
     UCX_LOG(2, "send data, len: " << msg.data[1].size() << ", to id " << id);
-
+    // compose a push response msg if needed
+    if (is_push_request && no_response_) {
+      UCXBuffer buff;
+      GenerateRespBuffMsg(msg, &buff);
+      rx_pool_->PushOrdered(buff);
+    }
     return len + msg.meta.data_size;
   }
 
@@ -1030,6 +1048,11 @@ class UCXVan : public Van {
     msg->data.clear();
     UCXBuffer buf;
     rx_pool_->PopOrdered(&buf);
+    if (buf.is_fake_resp) {
+      std::lock_guard<std::mutex> lk(response_mu_);
+      *msg = response_map_[buf.key];
+      return 0;
+    }
 
     // note size(2d param) is not really used by UnpackMeta
     UnpackMeta(buf.raw_meta, -1, &msg->meta);
@@ -1129,6 +1152,43 @@ class UCXVan : public Van {
 
  private:
 
+  void GenerateRespBuffMsg(const Message &msg, UCXBuffer* buf) {
+    Message resp;
+    resp.meta = msg.meta;
+    resp.meta.request     = false;
+    resp.meta.recver      = my_node_.id;
+    resp.meta.sender      = msg.meta.recver;
+    resp.meta.option      = UCX_OPTION_META;
+    buf->raw_meta     = nullptr;
+    buf->buffer       = nullptr;
+    buf->sender       = msg.meta.recver;
+    buf->should_stop  = false;
+    buf->is_fake_resp = true;
+    buf->key          = msg.meta.key;
+    std::lock_guard<std::mutex> lk(response_mu_);
+    response_map_[msg.meta.key] = resp;
+  }
+
+  void GenerateRespBuff(const Message &msg) {
+    struct Meta resp_meta = msg.meta;
+    resp_meta.request     = false;
+    resp_meta.recver      = my_node_.id;
+    resp_meta.sender      = msg.meta.recver;
+    resp_meta.option      = UCX_OPTION_META;
+    int size = GetPackMetaLen(resp_meta);
+    UCXBuffer buf;
+    // TODO: delete when done
+    buf.raw_meta    = new char[size + sizeof(ucp_dt_iov_t)*2];
+    buf.buffer      = nullptr;
+    buf.sender      = msg.meta.recver;
+    buf.should_stop = false;
+    int meta_size;
+    PackMeta(resp_meta, &buf.raw_meta, &meta_size);
+    // std::lock_guard<std::mutex> lk(response_mu_);
+    // response_map_[msg.meta.key] = buf;
+  }
+
+
   UCXContext* ContextById(int id) {
       return contexts_[std::max(0, id)].get();
   }
@@ -1168,6 +1228,11 @@ class UCXVan : public Van {
   ThreadsafeQueue<UCXBuffer>                           ordered_recv_buffers_;
   std::unique_ptr<std::thread>                         reorder_thread_;
   int                                                  force_request_order_;
+  bool                                                 no_response_;
+  // for push responses
+  std::unordered_map<uint64_t, Message>                response_map_;
+  std::mutex                                           response_mu_;
+
 };  // class UCXVan
 
 };  // namespace ps

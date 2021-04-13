@@ -33,6 +33,7 @@ std::unordered_map<uint64_t, KVPairs<char> > mem_map;
 // A map for the registered buffers
 std::unordered_map<int, std::unordered_map<ps::Key, SArray<char>>> registered_buffs;
 
+// knobs
 bool debug_mode_ = false;
 int num_ports = 1;
 bool enable_recv_buffer = false;
@@ -42,6 +43,7 @@ bool skip_dev_id_check = false;
 int num_gpu_server = 0;
 bool enable_cpu_server = 0;
 bool is_server = false;
+bool no_response = false;
 
 bool env2bool(const char* var, bool default_val) {
   auto env_str = Environment::Get()->find(var);
@@ -189,10 +191,11 @@ void EmptyHandler(const KVMeta &req_meta, const KVPairs<Val> &req_data, KVServer
           << "len: " << req_data.vals.size() << "\t"
           << "sender: " << req_meta.sender;
     }
-
-    // send push response (empty)
-    KVPairs<char> res;
-    server->Response(req_meta, res);
+    if (!no_response) {
+      // send push response (empty)
+      KVPairs<char> res;
+      server->Response(req_meta, res);
+    }
   } else {
     auto iter = mem_map.find(key);
     CHECK_NE(iter, mem_map.end());
@@ -486,6 +489,7 @@ int main(int argc, char *argv[]) {
     LOG(INFO) << "recv buffer registration is NOT enabled";
   }
   skip_dev_id_check = env2bool("SKIP_DEV_ID_CHECK", false);
+
   // num worker/server env vars
   local_size = env2int("TEST_NUM_GPU_WORKER", 0);
   LOG(INFO) << "TEST_NUM_GPU_WORKER = " << local_size;
@@ -493,6 +497,11 @@ int main(int argc, char *argv[]) {
   num_gpu_server = env2int("TEST_NUM_GPU_SERVER", 0);
   LOG(INFO) << "TEST_NUM_GPU_SERVER = " << num_gpu_server;
   enable_cpu_server = env2int("TEST_NUM_CPU_SERVER", 1);
+
+  // ucx related
+  auto no_response_str = getenv("BYTEPS_UCX_NO_RESPONSE");
+  no_response = no_response_str ? atoi(no_response_str) : false;
+  LOG(INFO) << " BYTEPS_UCX_NO_RESPONSE = " << no_response;
 
   // role
   const char* val = CHECK_NOTNULL(Environment::Get()->find("DMLC_ROLE"));
