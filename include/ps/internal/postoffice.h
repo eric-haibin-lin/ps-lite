@@ -18,7 +18,7 @@ namespace ps {
 class Postoffice {
  public:
   /**
-   * \brief return the first Postoffice instance in the following order:
+   * \brief return the first valid Postoffice instance in the following order:
    * scheduler, server, worker.
    */
   static Postoffice* Get() {
@@ -31,6 +31,8 @@ class Postoffice {
   /**
    * \brief return the Postoffice instance for scheduler if it exists.
    * Otherwise, return the one for the server.
+   * \param index the instance offset inside the worker group.
+   * it should be less than DMLC_GROUP_SIZE.
    */
   static Postoffice* GetServer(int index = 0) {
     CHECK(initialized_) << "Please call ps::StartPS() first";
@@ -135,23 +137,23 @@ class Postoffice {
 
   /**
    * \brief convert a worker group's rank into a instance id with the
-   * provded group offset from that group
+   * provded instance offset from that group
    * \param rank the worker group rank
-   * \param group_offset the offset of the instance in the group
+   * \param instance_offset the offset of the instance in the group
    */
-  inline int GroupWorkerRankToInstanceID(int rank, int group_offset) {
-    int instance_rank = rank * group_size_ + group_offset;
+  inline int GroupWorkerRankToInstanceID(int rank, int instance_offset) {
+    int instance_rank = rank * group_size_ + instance_offset;
     return WorkerRankToID(instance_rank);
   }
 
   /**
    * \brief convert a server group's rank into a instance id with the
-   * provded group offset from that group
+   * provded instance offset from that group
    * \param rank the server group rank
-   * \param group_offset the offset of the instance in the group
+   * \param instance_offset the offset of the instance in the group
    */
-  inline int GroupServerRankToInstanceID(int rank, int group_offset) {
-    int instance_rank = rank * group_size_ + group_offset;
+  inline int GroupServerRankToInstanceID(int rank, int instance_offset) {
+    int instance_rank = rank * group_size_ + instance_offset;
     return ServerRankToID(instance_rank);
   }
 
@@ -256,10 +258,10 @@ class Postoffice {
 
  private:
   /**
-   * \param group_offset the offset of the instance inside the group.
+   * \param instance_offset the offset of the instance inside the group.
    * It should be less than DMLC_GROUP_SIZE
    */
-  Postoffice(int group_offset);
+  Postoffice(int instance_offset);
   ~Postoffice() { delete van_; }
 
   /**
@@ -300,7 +302,7 @@ class Postoffice {
   std::mutex heartbeat_mu_;
   std::mutex start_mu_;
   int init_stage_ = 0;
-  int group_offset_ = 0;
+  int instance_offset_ = 0;
   std::unordered_map<int, time_t> heartbeats_;
   Callback exit_callback_;
   /** \brief Holding a shared_ptr to prevent it from being destructed too early */

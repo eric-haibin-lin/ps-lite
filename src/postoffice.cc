@@ -42,9 +42,9 @@ void Postoffice::Init(ps::Node::Role role) {
   initialized_ = true;
 }
 
-Postoffice::Postoffice(int group_offset) {
+Postoffice::Postoffice(int instance_offset) {
   env_ref_ = Environment::_GetSharedRef();
-  group_offset_ = group_offset;
+  instance_offset_ = instance_offset;
 }
 
 void Postoffice::InitEnvironment() {

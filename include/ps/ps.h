@@ -25,7 +25,7 @@ inline bool IsScheduler() { return Postoffice::Get()->is_scheduler(); }
  *
  * Each worker will have a unique rank within [0, NumWorkers()). So are
  * servers. This function is available only after \ref Start has been called.
- * The rank is group-level based.
+ * The rank is group-level instead of instance-level.
  */
 inline int MyRank() { return Postoffice::Get()->my_rank() / Postoffice::Get()->group_size(); }
 /**
@@ -50,27 +50,24 @@ inline Node::Role GetRole(const std::string role_str) {
   }
   return role;
 }
+
 /**
- * \brief start the system
+ * \brief start the system for one worker/server/scheduler instance
  *
- * This function will NOT block.
- * \param customer_id the customer id
- * \param preferred_rank the preferred rank. -1 means no preference and the rank will be assigned by
-          the scheduler. If the rank is non-negative, the preferred rank will be assigned accordingly.
- * \param argv0 the program name, used for logging
+ * \param instance_idx the offset of the instance in the instance group
  */
 inline void _StartPS(int customer_id, Node::Role role, int rank, bool do_barrier,
-                     const char *argv0, int index) {
+                     const char *argv0, int instance_offset) {
   if (role == Node::WORKER) {
-    Postoffice::GetWorker(index)->Start(customer_id, role, rank, do_barrier, argv0);
+    Postoffice::GetWorker(instance_offset)->Start(customer_id, role, rank, do_barrier, argv0);
   } else if (role == Node::SERVER || role == Node::SCHEDULER) {
-    Postoffice::GetServer(index)->Start(customer_id, role, rank, do_barrier, argv0);
+    Postoffice::GetServer(instance_offset)->Start(customer_id, role, rank, do_barrier, argv0);
   } else {
     // Joint PS: one worker, one server
-    std::thread thread_s(_StartPS, customer_id, Node::SERVER, rank, do_barrier, argv0, index);
+    std::thread thread_s(_StartPS, customer_id, Node::SERVER, rank, do_barrier, argv0, instance_offset);
     LOG(INFO) << "Postoffice server started.";
 
-    std::thread thread_w(_StartPS, customer_id, Node::WORKER, rank, do_barrier, argv0, index);
+    std::thread thread_w(_StartPS, customer_id, Node::WORKER, rank, do_barrier, argv0, instance_offset);
     LOG(INFO) << "Postoffice worker started.";
 
     thread_s.join();
@@ -78,6 +75,12 @@ inline void _StartPS(int customer_id, Node::Role role, int rank, bool do_barrier
   }
 }
 
+/**
+ * \brief start the system for a group of worker/server/scheduler instances, based on instance-level ranks
+ *
+ * \param worker_ranks the **instance-level** ranks of the worker instances to start
+ * \param server_ranks the **instance-level** ranks of the server instances to start
+ */
 inline void _StartPSGroup(int customer_id, std::vector<int> worker_ranks,
                           std::vector<int> server_ranks, bool do_barrier, const char *argv0 = nullptr) {
   std::vector<std::thread> threads;
@@ -100,11 +103,9 @@ inline void _StartPSGroup(int customer_id, std::vector<int> worker_ranks,
  * \param customer_id the customer id
  * \param role the node group / role: worker, server, scheduler, joint. joint role means
                both having worker and server
- * \param rank the preferred rank. -1 means no preference and the rank will be assigned by
-          the scheduler. If the rank is non-negative, the preferred rank will be assigned accordingly.
+ * \param rank the rank. -1 means no preference and the rank will be assigned by the scheduler.
  * \param do_barrier do a barrier to make sure every rank calls StartPS
  * \param argv0 the program name, used for logging
- * \param group_size the number of ps-lite instances per role
  */
 inline void StartPS(int customer_id, Node::Role role, int rank, bool do_barrier,
                     const char *argv0 = nullptr) {
@@ -113,8 +114,8 @@ inline void StartPS(int customer_id, Node::Role role, int rank, bool do_barrier,
 
   Postoffice::Init(role);
   if (group_size == 1 || role == Node::SCHEDULER) {
-    int group_offset = 0;
-    _StartPS(customer_id, role, rank, do_barrier, argv0, group_offset);
+    int instance_offset = 0;
+    _StartPS(customer_id, role, rank, do_barrier, argv0, instance_offset);
   } else {
     CHECK(rank >= 0 && group_size > 0) << group_size;
     std::vector<int> worker_ranks;
@@ -183,8 +184,8 @@ inline void Finalize(int customer_id, Node::Role role, const bool do_barrier = t
   auto val = Environment::Get()->find("DMLC_GROUP_SIZE");
   int group_size = val ? atoi(val) : 1;
   if (group_size == 1 || role == Node::SCHEDULER) {
-    int group_offset = 0;
-    _Finalize(customer_id, role, do_barrier, group_offset);
+    int instance_offset = 0;
+    _Finalize(customer_id, role, do_barrier, instance_offset);
   } else {
     _FinalizeGroup(customer_id, role, group_size, do_barrier);
   }

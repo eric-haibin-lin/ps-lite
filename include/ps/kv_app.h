@@ -85,12 +85,12 @@ class KVWorker : public SimpleApp {
    * \param app_id the app id, should match with \ref KVServer's id
    * \param customer_id the customer id which is unique locally
    */
-  explicit KVWorker(int app_id, int customer_id, int group_offset = 0) : SimpleApp() {
-    postoffice_ = Postoffice::GetWorker(group_offset);
-    PS_VLOG(3) << "KVWorker " << group_offset << " po@" << (long long) postoffice_;
-    group_offset_ = group_offset;
+  explicit KVWorker(int app_id, int customer_id, int instance_offset = 0) : SimpleApp() {
+    postoffice_ = Postoffice::GetWorker(instance_offset);
+    PS_VLOG(3) << "KVWorker " << instance_offset << " po@" << (long long) postoffice_;
+    instance_offset_ = instance_offset;
     int group_size = postoffice_->group_size();
-    CHECK(group_size > group_offset);
+    CHECK(group_size > instance_offset);
 
     using namespace std::placeholders;
     slicer_ = std::bind(&KVWorker<Val>::DefaultSlicer, this, _1, _2, _3);
@@ -314,7 +314,7 @@ class KVWorker : public SimpleApp {
   /** \brief kv list slicer */
   Slicer slicer_;
 
-  int group_offset_;
+  int instance_offset_;
 };
 
 /** \brief meta information about a kv request */
@@ -350,10 +350,10 @@ class KVServer : public SimpleApp {
    * \brief constructor
    * \param app_id the app id, should match with \ref KVWorker's id
    */
-  explicit KVServer(int app_id, bool is_scheduler = false, int group_offset = 0) : SimpleApp() {
-    postoffice_ = is_scheduler ? Postoffice::GetScheduler() : Postoffice::GetServer(group_offset);
-    CHECK(postoffice_) << is_scheduler << " " << group_offset;
-    group_offset_ = group_offset;
+  explicit KVServer(int app_id, bool is_scheduler = false, int instance_offset = 0) : SimpleApp() {
+    postoffice_ = is_scheduler ? Postoffice::GetScheduler() : Postoffice::GetServer(instance_offset);
+    CHECK(postoffice_) << is_scheduler << " " << instance_offset;
+    instance_offset_ = instance_offset;
     using namespace std::placeholders;
     this->obj_ = new Customer(app_id, app_id, std::bind(&KVServer::Process, this, _1), postoffice_);
   }
@@ -410,7 +410,7 @@ class KVServer : public SimpleApp {
   /** \brief lock for profile logging */
   std::mutex log_mu_;
   /** \brief the offset in the instance group */
-  int group_offset_;
+  int instance_offset_;
 };
 
 
@@ -449,10 +449,10 @@ void KVServer<Val>::RegisterRecvBuffer(int worker_id, SArray<Key>& keys,
                                        const SArray<Val>& vals,
                                        const SArray<int>& lens,
                                        int cmd) {
-  // server group support
+  // server instance group support
   int group_worker_id = worker_id;
   int group_worker_rank = postoffice_->IDtoRank(group_worker_id);
-  int instance_worker_id = postoffice_->GroupWorkerRankToInstanceID(group_worker_rank, group_offset_);
+  int instance_worker_id = postoffice_->GroupWorkerRankToInstanceID(group_worker_rank, instance_offset_);
 
   Message msg;
   msg.meta.request = true;
@@ -509,12 +509,11 @@ void KVServer<Val>::Process(const Message& msg) {
 
 template <typename Val>
 void KVServer<Val>::Response(const KVMeta& req, const KVPairs<Val>& res) {
-  // server group support
+  // server instance group support
   int group_worker_id = req.sender;
   int group_worker_rank = postoffice_->IDtoRank(group_worker_id);
-  int instance_worker_id = postoffice_->GroupWorkerRankToInstanceID(group_worker_rank, group_offset_);
-  // TODO: remove logging
-  PS_VLOG(3) << "server instance " << group_offset_ << " response to " << instance_worker_id;
+  int instance_worker_id = postoffice_->GroupWorkerRankToInstanceID(group_worker_rank, instance_offset_);
+  // PS_VLOG(3) << "server instance " << instance_offset_ << " response to " << instance_worker_id;
 
   Message msg;
   msg.meta.app_id = obj_->app_id();
@@ -616,11 +615,11 @@ void KVWorker<Val>::Send(int timestamp, bool push, int cmd, KVPairs<Val>& kvs) {
     auto& s = sliced[i];
     if (!s.first) continue;
 
-    // worker group support
+    // worker instance group support
     int group_server_rank = i;
-    int instance_server_id = postoffice_->GroupServerRankToInstanceID(group_server_rank, group_offset_);
-    // TODO: remove logging
-    PS_VLOG(3) << "worker instance " << group_offset_ << " send to " << instance_server_id;
+    int instance_server_id = postoffice_->GroupServerRankToInstanceID(group_server_rank, instance_offset_);
+    // PS_VLOG(3) << "worker instance " << instance_offset_ << " send to " << instance_server_id;
+
     Message msg;
     msg.meta.app_id = obj_->app_id();
     msg.meta.customer_id = obj_->customer_id();
