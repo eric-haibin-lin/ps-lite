@@ -637,7 +637,7 @@ int Van::Send(Message &msg) {
   CHECK_NE(send_bytes, -1) << this->GetType() << " sent -1 bytes";
   send_bytes_ += send_bytes;
   if (resender_) resender_->AddOutgoing(msg);
-  PS_VLOG(2) << this->GetType() << "\tsent: " << msg.DebugString();
+  PS_VLOG(2) << this->GetType() << " " << my_node_.id << "\tsent: " << msg.DebugString();
   return send_bytes;
 }
 
@@ -660,7 +660,7 @@ void Van::Receiving() {
 
     CHECK_NE(recv_bytes, -1);
     recv_bytes_ += recv_bytes;
-    PS_VLOG(2) << this->GetType() << "\treceived: " << msg.DebugString();
+    PS_VLOG(2) << this->GetType() << " " << my_node_.id << "\treceived: " << msg.DebugString();
     // duplicated message
     if (resender_ && resender_->AddIncomming(msg)) continue;
 

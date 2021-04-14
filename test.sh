@@ -26,6 +26,8 @@ export UCX_MAX_RNDV_RAILS=${UCX_MAX_RNDV_RAILS:-2}
 export DMLC_ENABLE_RDMA=${DMLC_ENABLE_RDMA:-1}        # enable rdma
 export DMLC_ENABLE_UCX=${DMLC_ENABLE_UCX:-1}          # enable ucx
 export PS_VERBOSE=${PS_VERBOSE:-1}
+export DMLC_RANK=${DMLC_RANK:=0}
+export DMLC_GROUP_SIZE=${DMLC_GROUP_SIZE:=1}
 
 # export UCX_MEMTYPE_CACHE=n
 # export UCX_RNDV_SCHEME=put_zcopy

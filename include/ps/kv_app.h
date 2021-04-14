@@ -85,8 +85,13 @@ class KVWorker : public SimpleApp {
    * \param app_id the app id, should match with \ref KVServer's id
    * \param customer_id the customer id which is unique locally
    */
-  explicit KVWorker(int app_id, int customer_id) : SimpleApp() {
-    postoffice_ = Postoffice::GetWorker();
+  explicit KVWorker(int app_id, int customer_id, int group_offset = 0) : SimpleApp() {
+    postoffice_ = Postoffice::GetWorker(group_offset);
+    PS_VLOG(3) << "KVWorker " << group_offset << " po@" << (long long) postoffice_;
+    group_offset_ = group_offset;
+    int group_size = postoffice_->group_size();
+    CHECK(group_size > group_offset);
+
     using namespace std::placeholders;
     slicer_ = std::bind(&KVWorker<Val>::DefaultSlicer, this, _1, _2, _3);
     obj_ = new Customer(app_id, customer_id, std::bind(&KVWorker<Val>::Process, this, _1), postoffice_);
@@ -309,7 +314,7 @@ class KVWorker : public SimpleApp {
   /** \brief kv list slicer */
   Slicer slicer_;
 
-  Postoffice* postoffice_;
+  int group_offset_;
 };
 
 /** \brief meta information about a kv request */
@@ -345,10 +350,12 @@ class KVServer : public SimpleApp {
    * \brief constructor
    * \param app_id the app id, should match with \ref KVWorker's id
    */
-  explicit KVServer(int app_id, bool is_scheduler = false) : SimpleApp() {
-    postoffice_ = is_scheduler ? Postoffice::GetScheduler() : Postoffice::GetServer();
+  explicit KVServer(int app_id, bool is_scheduler = false, int group_offset = 0) : SimpleApp() {
+    postoffice_ = is_scheduler ? Postoffice::GetScheduler() : Postoffice::GetServer(group_offset);
+    CHECK(postoffice_) << is_scheduler << " " << group_offset;
+    group_offset_ = group_offset;
     using namespace std::placeholders;
-    obj_ = new Customer(app_id, app_id, std::bind(&KVServer<Val>::Process, this, _1), postoffice_);
+    this->obj_ = new Customer(app_id, app_id, std::bind(&KVServer::Process, this, _1), postoffice_);
   }
 
   /** \brief deconstructor */
@@ -402,8 +409,8 @@ class KVServer : public SimpleApp {
   std::mutex mu_;
   /** \brief lock for profile logging */
   std::mutex log_mu_;
-
-  Postoffice* postoffice_;
+  /** \brief the offset in the instance group */
+  int group_offset_;
 };
 
 
@@ -442,11 +449,16 @@ void KVServer<Val>::RegisterRecvBuffer(int worker_id, SArray<Key>& keys,
                                        const SArray<Val>& vals,
                                        const SArray<int>& lens,
                                        int cmd) {
+  // server group support
+  int group_worker_id = worker_id;
+  int group_worker_rank = postoffice_->IDtoRank(group_worker_id);
+  int instance_worker_id = postoffice_->GroupWorkerRankToInstanceID(group_worker_rank, group_offset_);
+
   Message msg;
   msg.meta.request = true;
   msg.meta.push = true;
   msg.meta.head = cmd;
-  msg.meta.sender = worker_id;
+  msg.meta.sender = instance_worker_id;
   CHECK(keys.size());
   msg.AddData(keys);
   msg.AddData(vals);
@@ -462,10 +474,15 @@ void KVServer<Val>::Process(const Message& msg) {
   if (msg.meta.simple_app) {
     SimpleApp::Process(msg); return;
   }
+  // server group support
+  int instance_worker_id = msg.meta.sender;
+  int group_worker_rank = postoffice_->InstanceIDtoGroupRank(instance_worker_id);
+  int group_worker_id = postoffice_->WorkerRankToID(group_worker_rank);
+
   KVMeta meta;
   meta.cmd       = msg.meta.head;
   meta.push      = msg.meta.push;
-  meta.sender    = msg.meta.sender;
+  meta.sender    = group_worker_id;
   meta.timestamp = msg.meta.timestamp;
   meta.customer_id = msg.meta.customer_id;
   meta.key       = msg.meta.key;
@@ -492,6 +509,13 @@ void KVServer<Val>::Process(const Message& msg) {
 
 template <typename Val>
 void KVServer<Val>::Response(const KVMeta& req, const KVPairs<Val>& res) {
+  // server group support
+  int group_worker_id = req.sender;
+  int group_worker_rank = postoffice_->IDtoRank(group_worker_id);
+  int instance_worker_id = postoffice_->GroupWorkerRankToInstanceID(group_worker_rank, group_offset_);
+  // TODO: remove logging
+  PS_VLOG(3) << "server instance " << group_offset_ << " response to " << instance_worker_id;
+
   Message msg;
   msg.meta.app_id = obj_->app_id();
   msg.meta.customer_id = req.customer_id;
@@ -499,7 +523,7 @@ void KVServer<Val>::Response(const KVMeta& req, const KVPairs<Val>& res) {
   msg.meta.push        = req.push;
   msg.meta.head        = req.cmd;
   msg.meta.timestamp   = req.timestamp;
-  msg.meta.recver      = req.sender;
+  msg.meta.recver      = instance_worker_id;
   msg.meta.key         = req.key;
   msg.meta.addr        = req.addr;
   msg.meta.val_len     = req.val_len;
@@ -511,7 +535,7 @@ void KVServer<Val>::Response(const KVMeta& req, const KVPairs<Val>& res) {
       msg.AddData(res.lens);
     }
   }
-  Postoffice::GetServer()->van()->Send(msg);
+  postoffice_->van()->Send(msg);
 }
 
 template <typename Val>
@@ -591,6 +615,12 @@ void KVWorker<Val>::Send(int timestamp, bool push, int cmd, KVPairs<Val>& kvs) {
   for (size_t i = 0; i < sliced.size(); ++i) {
     auto& s = sliced[i];
     if (!s.first) continue;
+
+    // worker group support
+    int group_server_rank = i;
+    int instance_server_id = postoffice_->GroupServerRankToInstanceID(group_server_rank, group_offset_);
+    // TODO: remove logging
+    PS_VLOG(3) << "worker instance " << group_offset_ << " send to " << instance_server_id;
     Message msg;
     msg.meta.app_id = obj_->app_id();
     msg.meta.customer_id = obj_->customer_id();
@@ -598,7 +628,7 @@ void KVWorker<Val>::Send(int timestamp, bool push, int cmd, KVPairs<Val>& kvs) {
     msg.meta.push        = push;
     msg.meta.head        = cmd;
     msg.meta.timestamp   = timestamp;
-    msg.meta.recver      = Postoffice::GetWorker()->ServerRankToID(i);
+    msg.meta.recver      = instance_server_id;
     auto& kvs = s.second;
     msg.meta.addr = reinterpret_cast<uint64_t>(kvs.vals.data());
     msg.meta.val_len = kvs.vals.size();
@@ -623,7 +653,7 @@ void KVWorker<Val>::Send(int timestamp, bool push, int cmd, KVPairs<Val>& kvs) {
       msg.meta.dst_dev_type = dst_dev_type;
       msg.meta.dst_dev_id = dst_dev_id;
     }
-    Postoffice::GetWorker()->van()->Send(msg);
+    postoffice_->van()->Send(msg);
   }
 }
 

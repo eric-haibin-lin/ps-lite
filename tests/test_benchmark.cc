@@ -506,9 +506,10 @@ int main(int argc, char *argv[]) {
   }
 
   // start system
-  int my_rank = env2int("DMLC_PREFERRED_RANK", -1);
+  int my_rank = env2int("DMLC_RANK", -1);
+  int group_size = env2int("DMLC_GROUP_SIZE", -1);
   StartPS(0, role, my_rank, true);
-  
+
   // check rank
   if (my_rank != -1) {
     int assigned_rank = ps::Postoffice::Get()->my_rank();
@@ -516,15 +517,17 @@ int main(int argc, char *argv[]) {
   }
 
   // setup server nodes
-  StartServer(argc, argv);
+  StartServer(argc, argv, group_size);
   // run worker nodes
   if (!IsServer() && !IsScheduler()) {
     const int nthread = env2int("BENCHMARK_NTHREAD", 1);
     LOG(INFO) << "number of threads for the same worker = " << nthread;
-    KVWorker<char> kv(0, 0);
+    std::vector<KVWorker<char>*> kvs;
     std::vector<std::thread> threads;
     for (int i = 0; i < nthread; ++i) {
-      threads.emplace_back(RunWorker, argc, argv, &kv, threads.size());
+      KVWorker<char>* kv = new KVWorker<char>(0, 0, i);
+      kvs.emplace_back(kv);
+      threads.emplace_back(RunWorker, argc, argv, kv, threads.size());
     }
     for (int i = 0; i < nthread; ++i) {
       threads[i].join();
