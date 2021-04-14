@@ -57,17 +57,17 @@ inline Node::Role GetRole(const std::string role_str) {
  * \param instance_idx the offset of the instance in the instance group
  */
 inline void _StartPS(int customer_id, Node::Role role, int rank, bool do_barrier,
-                     const char *argv0, int instance_offset) {
+                     const char *argv0, int instance_idx) {
   if (role == Node::WORKER) {
-    Postoffice::GetWorker(instance_offset)->Start(customer_id, role, rank, do_barrier, argv0);
+    Postoffice::GetWorker(instance_idx)->Start(customer_id, role, rank, do_barrier, argv0);
   } else if (role == Node::SERVER || role == Node::SCHEDULER) {
-    Postoffice::GetServer(instance_offset)->Start(customer_id, role, rank, do_barrier, argv0);
+    Postoffice::GetServer(instance_idx)->Start(customer_id, role, rank, do_barrier, argv0);
   } else {
     // Joint PS: one worker, one server
-    std::thread thread_s(_StartPS, customer_id, Node::SERVER, rank, do_barrier, argv0, instance_offset);
+    std::thread thread_s(_StartPS, customer_id, Node::SERVER, rank, do_barrier, argv0, instance_idx);
     LOG(INFO) << "Postoffice server started.";
 
-    std::thread thread_w(_StartPS, customer_id, Node::WORKER, rank, do_barrier, argv0, instance_offset);
+    std::thread thread_w(_StartPS, customer_id, Node::WORKER, rank, do_barrier, argv0, instance_idx);
     LOG(INFO) << "Postoffice worker started.";
 
     thread_s.join();
@@ -114,8 +114,8 @@ inline void StartPS(int customer_id, Node::Role role, int rank, bool do_barrier,
 
   Postoffice::Init(role);
   if (group_size == 1 || role == Node::SCHEDULER) {
-    int instance_offset = 0;
-    _StartPS(customer_id, role, rank, do_barrier, argv0, instance_offset);
+    int instance_idx = 0;
+    _StartPS(customer_id, role, rank, do_barrier, argv0, instance_idx);
   } else {
     CHECK(rank >= 0 && group_size > 0) << group_size;
     std::vector<int> worker_ranks;
@@ -184,8 +184,8 @@ inline void Finalize(int customer_id, Node::Role role, const bool do_barrier = t
   auto val = Environment::Get()->find("DMLC_GROUP_SIZE");
   int group_size = val ? atoi(val) : 1;
   if (group_size == 1 || role == Node::SCHEDULER) {
-    int instance_offset = 0;
-    _Finalize(customer_id, role, do_barrier, instance_offset);
+    int instance_idx = 0;
+    _Finalize(customer_id, role, do_barrier, instance_idx);
   } else {
     _FinalizeGroup(customer_id, role, group_size, do_barrier);
   }

@@ -139,10 +139,10 @@ class Postoffice {
    * \brief convert a worker group's rank into a instance id with the
    * provded instance offset from that group
    * \param rank the worker group rank
-   * \param instance_offset the offset of the instance in the group
+   * \param instance_idx the offset of the instance in the group
    */
-  inline int GroupWorkerRankToInstanceID(int rank, int instance_offset) {
-    int instance_rank = rank * group_size_ + instance_offset;
+  inline int GroupWorkerRankToInstanceID(int rank, int instance_idx) {
+    int instance_rank = rank * group_size_ + instance_idx;
     return WorkerRankToID(instance_rank);
   }
 
@@ -150,10 +150,10 @@ class Postoffice {
    * \brief convert a server group's rank into a instance id with the
    * provded instance offset from that group
    * \param rank the server group rank
-   * \param instance_offset the offset of the instance in the group
+   * \param instance_idx the offset of the instance in the group
    */
-  inline int GroupServerRankToInstanceID(int rank, int instance_offset) {
-    int instance_rank = rank * group_size_ + instance_offset;
+  inline int GroupServerRankToInstanceID(int rank, int instance_idx) {
+    int instance_rank = rank * group_size_ + instance_idx;
     return ServerRankToID(instance_rank);
   }
 
@@ -258,10 +258,10 @@ class Postoffice {
 
  private:
   /**
-   * \param instance_offset the offset of the instance inside the group.
+   * \param instance_idx the offset of the instance inside the group.
    * It should be less than DMLC_GROUP_SIZE
    */
-  Postoffice(int instance_offset);
+  Postoffice(int instance_idx);
   ~Postoffice() { delete van_; }
 
   /**
@@ -302,7 +302,7 @@ class Postoffice {
   std::mutex heartbeat_mu_;
   std::mutex start_mu_;
   int init_stage_ = 0;
-  int instance_offset_ = 0;
+  int instance_idx_ = 0;
   std::unordered_map<int, time_t> heartbeats_;
   Callback exit_callback_;
   /** \brief Holding a shared_ptr to prevent it from being destructed too early */

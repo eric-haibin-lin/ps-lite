@@ -85,12 +85,12 @@ class KVWorker : public SimpleApp {
    * \param app_id the app id, should match with \ref KVServer's id
    * \param customer_id the customer id which is unique locally
    */
-  explicit KVWorker(int app_id, int customer_id, int instance_offset = 0) : SimpleApp() {
-    postoffice_ = Postoffice::GetWorker(instance_offset);
-    PS_VLOG(3) << "KVWorker " << instance_offset << " po@" << (long long) postoffice_;
-    instance_offset_ = instance_offset;
+  explicit KVWorker(int app_id, int customer_id, int instance_idx = 0) : SimpleApp() {
+    postoffice_ = Postoffice::GetWorker(instance_idx);
+    PS_VLOG(3) << "KVWorker " << instance_idx << " po@" << (long long) postoffice_;
+    instance_idx_ = instance_idx;
     int group_size = postoffice_->group_size();
-    CHECK(group_size > instance_offset);
+    CHECK(group_size > instance_idx);
 
     using namespace std::placeholders;
     slicer_ = std::bind(&KVWorker<Val>::DefaultSlicer, this, _1, _2, _3);
@@ -314,7 +314,7 @@ class KVWorker : public SimpleApp {
   /** \brief kv list slicer */
   Slicer slicer_;
 
-  int instance_offset_;
+  int instance_idx_;
 };
 
 /** \brief meta information about a kv request */
@@ -350,10 +350,10 @@ class KVServer : public SimpleApp {
    * \brief constructor
    * \param app_id the app id, should match with \ref KVWorker's id
    */
-  explicit KVServer(int app_id, bool is_scheduler = false, int instance_offset = 0) : SimpleApp() {
-    postoffice_ = is_scheduler ? Postoffice::GetScheduler() : Postoffice::GetServer(instance_offset);
-    CHECK(postoffice_) << is_scheduler << " " << instance_offset;
-    instance_offset_ = instance_offset;
+  explicit KVServer(int app_id, bool is_scheduler = false, int instance_idx = 0) : SimpleApp() {
+    postoffice_ = is_scheduler ? Postoffice::GetScheduler() : Postoffice::GetServer(instance_idx);
+    CHECK(postoffice_) << is_scheduler << " " << instance_idx;
+    instance_idx_ = instance_idx;
     using namespace std::placeholders;
     this->obj_ = new Customer(app_id, app_id, std::bind(&KVServer::Process, this, _1), postoffice_);
   }
@@ -363,10 +363,9 @@ class KVServer : public SimpleApp {
     delete obj_;
     obj_ = nullptr;
     auto iter = server_key_map.begin();
-    while(iter != server_key_map.end())
-    {
-        delete &iter->second;
-        server_key_map.erase(iter++);
+    while(iter != server_key_map.end()) {
+      delete &iter->second;
+      server_key_map.erase(iter++);
     }
   }
 
@@ -397,6 +396,15 @@ class KVServer : public SimpleApp {
   void RegisterRecvBuffer(int worker_id, SArray<Key>& keys, const SArray<Val>& vals,
                           const SArray<int>& lens = {}, int cmd = 0);
 
+  /**
+   * specify the recver's buffer for target keys with worker rank
+   */
+  void RegisterRecvBufferWithRank(int worker_rank, SArray<Key>& keys, const SArray<Val>& vals,
+                                  const SArray<int>& lens = {}, int cmd = 0);
+
+  /** \brief the offset in the instance group */
+  int instance_idx_;
+
  private:
   /** \brief internal receive handle */
   void Process(const Message& msg);
@@ -409,8 +417,10 @@ class KVServer : public SimpleApp {
   std::mutex mu_;
   /** \brief lock for profile logging */
   std::mutex log_mu_;
-  /** \brief the offset in the instance group */
-  int instance_offset_;
+
+  void RegisterRecvBuffer_(int worker_id, SArray<Key>& keys, const SArray<Val>& vals,
+                           const SArray<int>& lens = {}, int cmd = 0);
+
 };
 
 
@@ -445,20 +455,15 @@ struct KVServerDefaultHandle {
 ///////////////////////////////////////////////////////////////////////////////
 
 template <typename Val>
-void KVServer<Val>::RegisterRecvBuffer(int worker_id, SArray<Key>& keys,
-                                       const SArray<Val>& vals,
-                                       const SArray<int>& lens,
-                                       int cmd) {
-  // server instance group support
-  int group_worker_id = worker_id;
-  int group_worker_rank = postoffice_->IDtoRank(group_worker_id);
-  int instance_worker_id = postoffice_->GroupWorkerRankToInstanceID(group_worker_rank, instance_offset_);
-
+void KVServer<Val>::RegisterRecvBuffer_(int worker_id, SArray<Key>& keys,
+                                        const SArray<Val>& vals,
+                                        const SArray<int>& lens,
+                                        int cmd) {
   Message msg;
   msg.meta.request = true;
   msg.meta.push = true;
   msg.meta.head = cmd;
-  msg.meta.sender = instance_worker_id;
+  msg.meta.sender = worker_id;
   CHECK(keys.size());
   msg.AddData(keys);
   msg.AddData(vals);
@@ -466,7 +471,28 @@ void KVServer<Val>::RegisterRecvBuffer(int worker_id, SArray<Key>& keys,
   msg.AddData(lens);
   auto key_ptr = reinterpret_cast<Key*>(msg.data[0].data());
   msg.meta.key = *key_ptr;
-  Postoffice::Get()->van()->RegisterRecvBuffer(msg);
+  postoffice_->van()->RegisterRecvBuffer(msg);
+}
+
+template <typename Val>
+void KVServer<Val>::RegisterRecvBuffer(int worker_id, SArray<Key>& keys,
+                                       const SArray<Val>& vals,
+                                       const SArray<int>& lens,
+                                       int cmd) {
+  LOG(WARNING) << "RegisterRecvBuffer is deprecated. Please use RegisterRecvBufferWithRank";
+  RegisterRecvBuffer_(worker_id, keys, vals, lens, cmd);
+  return;
+}
+
+template <typename Val>
+void KVServer<Val>::RegisterRecvBufferWithRank(int worker_rank, SArray<Key>& keys,
+                                               const SArray<Val>& vals,
+                                               const SArray<int>& lens,
+                                               int cmd) {
+  // server instance group support
+  int group_worker_rank = worker_rank;
+  int instance_worker_id = postoffice_->GroupWorkerRankToInstanceID(group_worker_rank, instance_idx_);
+  RegisterRecvBuffer_(instance_worker_id, keys, vals, lens);
 }
 
 template <typename Val>
@@ -512,8 +538,8 @@ void KVServer<Val>::Response(const KVMeta& req, const KVPairs<Val>& res) {
   // server instance group support
   int group_worker_id = req.sender;
   int group_worker_rank = postoffice_->IDtoRank(group_worker_id);
-  int instance_worker_id = postoffice_->GroupWorkerRankToInstanceID(group_worker_rank, instance_offset_);
-  // PS_VLOG(3) << "server instance " << instance_offset_ << " response to " << instance_worker_id;
+  int instance_worker_id = postoffice_->GroupWorkerRankToInstanceID(group_worker_rank, instance_idx_);
+  // PS_VLOG(3) << "server instance " << instance_idx_ << " response to " << instance_worker_id;
 
   Message msg;
   msg.meta.app_id = obj_->app_id();
@@ -617,8 +643,8 @@ void KVWorker<Val>::Send(int timestamp, bool push, int cmd, KVPairs<Val>& kvs) {
 
     // worker instance group support
     int group_server_rank = i;
-    int instance_server_id = postoffice_->GroupServerRankToInstanceID(group_server_rank, instance_offset_);
-    // PS_VLOG(3) << "worker instance " << instance_offset_ << " send to " << instance_server_id;
+    int instance_server_id = postoffice_->GroupServerRankToInstanceID(group_server_rank, instance_idx_);
+    // PS_VLOG(3) << "worker instance " << instance_idx_ << " send to " << instance_server_id;
 
     Message msg;
     msg.meta.app_id = obj_->app_id();
