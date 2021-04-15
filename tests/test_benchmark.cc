@@ -386,9 +386,11 @@ void push_pull(KVWorker<char>* kv,
     if (cnt % log_duration != 0) continue;
 
     end = std::chrono::high_resolution_clock::now();
+    auto latency = (end - start).count();
+
     LL << "[" << tid << "]\tApplication goodput: "
-        << 8.0 * len * sizeof(char) * total_key_num * cnt / (end - start).count() 
-        << " Gbps";
+        << 8.0 * len * sizeof(char) * total_key_num * cnt / latency
+        << " Gbps.\tAvg latency = " << latency / cnt / total_key_num / 1000.0 << " ns per key";
     cnt = 0;
     start = std::chrono::high_resolution_clock::now();
   }
