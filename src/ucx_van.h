@@ -1140,7 +1140,6 @@ class UCXVan : public Van {
     mem_map_params.address = addr;
     mem_map_params.length = length;
     mem_map_params.memory_type = UCS_MEMORY_TYPE_CUDA;
-    std::string mode = "NONE";
     ucp_mem_h memh = NULL;
 #if DMLC_USE_CUDA
     int dev_id = -1;
@@ -1151,7 +1150,8 @@ class UCXVan : public Van {
     auto tmp_ctx = ContextById(dev_id)->context_;
     CHECK_STATUS(ucp_mem_map(tmp_ctx, &mem_map_params, &memh));
     CHECK_STATUS(ucp_mem_unmap(tmp_ctx, memh));
-    PS_VLOG(INFO) << "DONE UCXVAN Memory Pinning (map,unmap). Mode = " << mode << " device=CUDA";
+    VLOG(1) << "DONE Pinning (map,unmap). addr=" << addr
+            << " len=" << length << " device=CUDA ";
     return 0;
   }
 
