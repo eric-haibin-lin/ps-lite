@@ -513,6 +513,8 @@ private:
 // using UCXEndpointsPool class.
 class UCXContext {
 public:
+  // TODO: add register method
+  ucp_context_h                                     context_;
   UCXContext(UCXRecvPool *rx_pool, int idx, int type) :
     src_dev_idx_(idx), src_dev_type_(type), rx_pool_(rx_pool) {}
 
@@ -827,7 +829,7 @@ private:
   }
 
   UCXEndpointsPool                                  ep_pool_;
-  ucp_context_h                                     context_;
+  // ucp_context_h                                     context_;
   ucp_worker_h                                      tx_worker_;
   ucp_worker_h                                      rx_worker_;
   ucp_listener_h                                    listener_;
@@ -1128,6 +1130,44 @@ class UCXVan : public Van {
     total_len += keys.size() + vals.size() + lens.size();
 
     return total_len;
+  }
+
+  int PinMemory(void *addr, size_t length) override {
+    ucp_mem_map_params_t mem_map_params;
+    memset(&mem_map_params, 0, sizeof(ucp_mem_map_params_t));
+    mem_map_params.field_mask = UCP_MEM_MAP_PARAM_FIELD_ADDRESS |
+                                UCP_MEM_MAP_PARAM_FIELD_LENGTH |
+				UCP_MEM_MAP_PARAM_FIELD_MEMORY_TYPE;
+    mem_map_params.address = addr;
+    mem_map_params.length = length;
+    mem_map_params.memory_type = UCS_MEMORY_TYPE_CUDA;
+    std::string mode = "NONE";
+    if (getenv("DMLC_REG_NONBLOCK") && atoi(getenv("DMLC_REG_NONBLOCK"))) {
+      mem_map_params.flags = UCP_MEM_MAP_NONBLOCK;
+      mem_map_params.field_mask |= UCP_MEM_MAP_PARAM_FIELD_FLAGS;
+      mode = "NONBLOCK";
+    }
+    if (getenv("DMLC_REG_ALLOCATE") && atoi(getenv("DMLC_REG_ALLOCATE"))) {
+      mem_map_params.flags = UCP_MEM_MAP_ALLOCATE;
+      mem_map_params.field_mask |= UCP_MEM_MAP_PARAM_FIELD_FLAGS;
+      mode = "ALLOCATE";
+    }
+    if (getenv("DMLC_REG_FIXED") && atoi(getenv("DMLC_REG_FIXED"))) {
+      mem_map_params.flags = UCP_MEM_MAP_FIXED;
+      mem_map_params.field_mask |= UCP_MEM_MAP_PARAM_FIELD_FLAGS;
+      mode = "FIXED";
+    }
+    ucp_mem_h memh = NULL;
+#if DMLC_USE_CUDA
+    int dev_id = -1;
+    if (cudaGetDevice(&dev_id) != cudaSuccess) {
+      LOG(ERROR) << "cudaGetDevice failed";
+    }
+#endif
+    auto tmp_ctx = ContextById(dev_id)->context_;
+    CHECK_STATUS(ucp_mem_map(tmp_ctx, &mem_map_params, &memh));
+    LOG(INFO) << "DONE UCXVAN Memory Pinning. Mode = " << mode << " device=CUDA";
+    return 0;
   }
 
   bool IsPushpullRequest(const RawMeta* raw) {

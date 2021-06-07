@@ -115,6 +115,14 @@ class Van {
     CHECK(false) << "recv buffer registration is not supported";
   }
 
+  virtual int PinMemory(void *addr, size_t length) {
+    CHECK(false) << "RDMA memory registration is not supported";
+  }
+
+  virtual int UnpinMemory(void *addr, size_t length) {
+    CHECK(false) << "RDMA memory registration is not supported";
+  }
+
   /**
    * \brief set the identity of the node
    */
