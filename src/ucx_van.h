@@ -260,7 +260,6 @@ public:
 
     return (it->second->connected) ? it->second->ep : nullptr;
   }
-
  private:
   void CloseEp(ucp_ep_h ep) {
     void *req = ucp_ep_close_nb(ep, UCP_EP_CLOSE_MODE_FLUSH);
@@ -1142,21 +1141,6 @@ class UCXVan : public Van {
     mem_map_params.length = length;
     mem_map_params.memory_type = UCS_MEMORY_TYPE_CUDA;
     std::string mode = "NONE";
-    if (getenv("DMLC_REG_NONBLOCK") && atoi(getenv("DMLC_REG_NONBLOCK"))) {
-      mem_map_params.flags = UCP_MEM_MAP_NONBLOCK;
-      mem_map_params.field_mask |= UCP_MEM_MAP_PARAM_FIELD_FLAGS;
-      mode = "NONBLOCK";
-    }
-    if (getenv("DMLC_REG_ALLOCATE") && atoi(getenv("DMLC_REG_ALLOCATE"))) {
-      mem_map_params.flags = UCP_MEM_MAP_ALLOCATE;
-      mem_map_params.field_mask |= UCP_MEM_MAP_PARAM_FIELD_FLAGS;
-      mode = "ALLOCATE";
-    }
-    if (getenv("DMLC_REG_FIXED") && atoi(getenv("DMLC_REG_FIXED"))) {
-      mem_map_params.flags = UCP_MEM_MAP_FIXED;
-      mem_map_params.field_mask |= UCP_MEM_MAP_PARAM_FIELD_FLAGS;
-      mode = "FIXED";
-    }
     ucp_mem_h memh = NULL;
 #if DMLC_USE_CUDA
     int dev_id = -1;
@@ -1166,7 +1150,8 @@ class UCXVan : public Van {
 #endif
     auto tmp_ctx = ContextById(dev_id)->context_;
     CHECK_STATUS(ucp_mem_map(tmp_ctx, &mem_map_params, &memh));
-    LOG(INFO) << "DONE UCXVAN Memory Pinning. Mode = " << mode << " device=CUDA";
+    CHECK_STATUS(ucp_mem_unmap(tmp_ctx, memh));
+    PS_VLOG(INFO) << "DONE UCXVAN Memory Pinning (map,unmap). Mode = " << mode << " device=CUDA";
     return 0;
   }
 

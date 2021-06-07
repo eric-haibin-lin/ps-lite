@@ -119,10 +119,6 @@ class Van {
     CHECK(false) << "RDMA memory registration is not supported";
   }
 
-  virtual int UnpinMemory(void *addr, size_t length) {
-    CHECK(false) << "RDMA memory registration is not supported";
-  }
-
   /**
    * \brief set the identity of the node
    */
