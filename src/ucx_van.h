@@ -512,8 +512,6 @@ private:
 // using UCXEndpointsPool class.
 class UCXContext {
 public:
-  // TODO: add register method
-  ucp_context_h                                     context_;
   UCXContext(UCXRecvPool *rx_pool, int idx, int type) :
     src_dev_idx_(idx), src_dev_type_(type), rx_pool_(rx_pool) {}
 
@@ -585,6 +583,22 @@ public:
 
   void Connect(const Node &node) {
       ep_pool_.Create(node);
+  }
+
+  int PinMemory(void *addr, size_t length) {
+    ucp_mem_map_params_t mem_map_params;
+    memset(&mem_map_params, 0, sizeof(ucp_mem_map_params_t));
+    mem_map_params.field_mask = UCP_MEM_MAP_PARAM_FIELD_ADDRESS |
+                                UCP_MEM_MAP_PARAM_FIELD_LENGTH |
+				UCP_MEM_MAP_PARAM_FIELD_MEMORY_TYPE;
+    mem_map_params.address = addr;
+    mem_map_params.length = length;
+    mem_map_params.memory_type = UCS_MEMORY_TYPE_CUDA;
+    ucp_mem_h memh = NULL;
+    CHECK_STATUS(ucp_mem_map(context_, &mem_map_params, &memh));
+    CHECK_STATUS(ucp_mem_unmap(context_, memh));
+    VLOG(1) << "Pinned memory addr=" << addr
+            << " len=" << length << " device=CUDA ";
   }
 
   void PollRx() {
@@ -828,7 +842,7 @@ private:
   }
 
   UCXEndpointsPool                                  ep_pool_;
-  // ucp_context_h                                     context_;
+  ucp_context_h                                     context_;
   ucp_worker_h                                      tx_worker_;
   ucp_worker_h                                      rx_worker_;
   ucp_listener_h                                    listener_;
@@ -1131,28 +1145,17 @@ class UCXVan : public Van {
     return total_len;
   }
 
-  int PinMemory(void *addr, size_t length) override {
-    ucp_mem_map_params_t mem_map_params;
-    memset(&mem_map_params, 0, sizeof(ucp_mem_map_params_t));
-    mem_map_params.field_mask = UCP_MEM_MAP_PARAM_FIELD_ADDRESS |
-                                UCP_MEM_MAP_PARAM_FIELD_LENGTH |
-				UCP_MEM_MAP_PARAM_FIELD_MEMORY_TYPE;
-    mem_map_params.address = addr;
-    mem_map_params.length = length;
-    mem_map_params.memory_type = UCS_MEMORY_TYPE_CUDA;
-    ucp_mem_h memh = NULL;
+  void PinMemory(void *addr, size_t length, bool gpu) override {
+    CHECK(gpu);
 #if DMLC_USE_CUDA
     int dev_id = -1;
     if (cudaGetDevice(&dev_id) != cudaSuccess) {
       LOG(ERROR) << "cudaGetDevice failed";
     }
 #endif
-    auto tmp_ctx = ContextById(dev_id)->context_;
-    CHECK_STATUS(ucp_mem_map(tmp_ctx, &mem_map_params, &memh));
-    CHECK_STATUS(ucp_mem_unmap(tmp_ctx, memh));
-    VLOG(1) << "DONE Pinning (map,unmap). addr=" << addr
-            << " len=" << length << " device=CUDA ";
-    return 0;
+    auto ctx = ContextById(dev_id);
+    CHECK(ctx);
+    ctx->PinMemory(addr, length);
   }
 
   bool IsPushpullRequest(const RawMeta* raw) {

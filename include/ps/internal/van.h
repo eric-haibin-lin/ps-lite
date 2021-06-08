@@ -115,7 +115,7 @@ class Van {
     CHECK(false) << "recv buffer registration is not supported";
   }
 
-  virtual int PinMemory(void *addr, size_t length) {
+  virtual void PinMemory(void *addr, size_t length, bool gpu) {
     CHECK(false) << "RDMA memory registration is not supported";
   }
 
