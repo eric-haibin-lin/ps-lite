@@ -585,7 +585,7 @@ public:
       ep_pool_.Create(node);
   }
 
-  int PinMemory(void *addr, size_t length) {
+  void PinMemory(void *addr, size_t length) {
     ucp_mem_map_params_t mem_map_params;
     memset(&mem_map_params, 0, sizeof(ucp_mem_map_params_t));
     mem_map_params.field_mask = UCP_MEM_MAP_PARAM_FIELD_ADDRESS |
@@ -595,10 +595,10 @@ public:
     mem_map_params.length = length;
     mem_map_params.memory_type = UCS_MEMORY_TYPE_CUDA;
     ucp_mem_h memh = NULL;
-    CHECK_STATUS(ucp_mem_map(context_, &mem_map_params, &memh));
-    CHECK_STATUS(ucp_mem_unmap(context_, memh));
-    VLOG(1) << "Pinned memory addr=" << addr
-            << " len=" << length << " device=CUDA ";
+    auto status = ucp_mem_map(context_, &mem_map_params, &memh);
+    CHECK_STATUS(status) << "ucp_mem_map failed: " << ucs_status_string(status);
+    status = ucp_mem_unmap(context_, memh);
+    CHECK_STATUS(status) << "ucp_mem_unmap failed: " << ucs_status_string(status);
   }
 
   void PollRx() {
