@@ -1152,7 +1152,7 @@ class UCXVan : public Van {
   }
 
   void PinMemory(void *addr, size_t length, bool gpu) override {
-    CHECK(gpu);
+    CHECK(gpu) << " cpu memory registration is not implemented yet";
 #if DMLC_USE_CUDA
     int dev_id = -1;
     if (cudaGetDevice(&dev_id) != cudaSuccess) {
@@ -1160,7 +1160,7 @@ class UCXVan : public Van {
     }
 #endif
     auto ctx = ContextById(dev_id);
-    CHECK(ctx);
+    CHECK(ctx) << "invalid device id " << dev_id;
     ctx->PinMemory(addr, length);
   }
 
