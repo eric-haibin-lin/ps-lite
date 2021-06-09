@@ -597,8 +597,14 @@ public:
     ucp_mem_h memh = NULL;
     auto status = ucp_mem_map(context_, &mem_map_params, &memh);
     CHECK_STATUS(status) << "ucp_mem_map failed: " << ucs_status_string(status);
+    void *rkey_buffer_p;
+    size_t size_p;
+    status = ucp_rkey_pack(context_, memh, &rkey_buffer_p, &size_p);
+    CHECK_STATUS(status) << "ucp_rkey_pack failed: " << ucs_status_string(status);
+    ucp_rkey_buffer_release(rkey_buffer_p);
     status = ucp_mem_unmap(context_, memh);
     CHECK_STATUS(status) << "ucp_mem_unmap failed: " << ucs_status_string(status);
+    VLOG(1) << "Pinned memory for " << addr << " len=" << length;
   }
 
   void PollRx() {
