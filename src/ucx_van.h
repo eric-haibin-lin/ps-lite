@@ -1153,8 +1153,8 @@ class UCXVan : public Van {
 
   void PinMemory(void *addr, size_t length, bool gpu) override {
     CHECK(gpu) << " cpu memory registration is not implemented yet";
-#if DMLC_USE_CUDA
     int dev_id = -1;
+#if DMLC_USE_CUDA
     if (cudaGetDevice(&dev_id) != cudaSuccess) {
       LOG(ERROR) << "cudaGetDevice failed";
     }
